@@ -62,7 +62,7 @@ fn extract_mutations(input_bam: &str, reference_genome: &str) {
 
     let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
     println!("chromosome\tposition\treference_base\tvariant_base\tcanonical_type\tcanonical_context\taligned_depth\t\
-              hmajor_variant_count\thminor_variant_count\thmajor_vaf\thminor_vaf\th1_a\th1_c\th1_t\th1_t\th2_a\th2_c\th2_g\th2_t");
+              hmajor_variant_count\thminor_variant_count\thmajor_vaf\thminor_vaf\th1_a\th1_c\th1_g\th1_t\th2_a\th2_c\th2_g\th2_t");
 
     let chromosome_name = "chr20";
     let min_variant_observations = 5;
@@ -88,6 +88,7 @@ fn extract_mutations(input_bam: &str, reference_genome: &str) {
         // four bases, on two haplotypes
         let mut base_counts: [u32; 8] = [0; 8];
         let mut haplotype_depth: [u32; 2] = [0; 2];
+        //println!("processing {}", pileup.pos() + 1);
 
         for alignment in pileup.alignments() {
             if let Some(qpos) = alignment.qpos() {
@@ -95,6 +96,7 @@ fn extract_mutations(input_bam: &str, reference_genome: &str) {
                     let read_base = alignment.record().seq()[qpos] as char;
                     let bi = base2index(read_base);
                     let bci = (haplotype_index - 1) * 4 + bi;
+                    //println!("\t{haplotype_index}\t{read_base}\t{bi}\t{bci}");
                     base_counts[bci as usize] += 1;
                     aligned_depth += 1;
                     haplotype_depth[ (haplotype_index - 1) as usize ] += 1;
@@ -142,7 +144,6 @@ fn extract_mutations(input_bam: &str, reference_genome: &str) {
 
             // read support statistics
             let position = pileup.pos() + 1; // to match vcf
-
             
             let hmaj_vaf = max_variant_count as f32 / haplotype_depth[max_haplotype_index] as f32;
             
