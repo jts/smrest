@@ -1,6 +1,8 @@
 use rust_htslib::{bam, faidx, bam::Read, bam::record::Aux};
-use std::collections::HashMap;
+use rust_htslib::bcf::{Reader as BcfReader, Read as BcfRead};
+use std::collections::{HashSet, HashMap};
 use clap::{App, SubCommand, Arg};
+use itertools::Itertools;
 
 fn main() {
     let matches = App::new("smrest")
@@ -28,11 +30,31 @@ fn main() {
                 .arg(Arg::with_name("input-bam")
                     .required(true)
                     .index(1)
+                    .help("the input bam file to process")))
+        .subcommand(SubCommand::with_name("error-contexts")
+                .about("gather error rate statistics per sequence context")
+                .arg(Arg::with_name("vcf")
+                    .short('v')
+                    .long("vcf")
+                    .takes_value(true)
+                    .help("vcf file, these positions will not be included in context analysis"))
+                .arg(Arg::with_name("genome")
+                    .short('g')
+                    .long("genome")
+                    .takes_value(true)
+                    .help("the reference genome"))
+                .arg(Arg::with_name("input-bam")
+                    .required(true)
+                    .index(1)
                     .help("the input bam file to process"))).get_matches();
     
     if let Some(matches) = matches.subcommand_matches("extract") {
         extract_mutations(matches.value_of("input-bam").unwrap(),
                           matches.value_of("genome").unwrap());
+    } else if let Some(matches) = matches.subcommand_matches("error-contexts") {
+        error_contexts(matches.value_of("input-bam").unwrap(),
+                       matches.value_of("genome").unwrap(),
+                       matches.value_of("vcf").unwrap());
     }
 }
 
@@ -204,10 +226,6 @@ fn extract_mutations(input_bam: &str, reference_genome: &str) {
         let reference_base = chromosome_bytes[reference_position] as char;
         let reference_base_index = base2index(reference_base) as u32;
 
-        if reference_position > 1000000 {
-            break;
-        }
-
         // Calculate most frequently observed non-reference base on either haplotype
         let mut max_variant_count = 0;
         let mut max_variant_index = 0;
@@ -265,6 +283,98 @@ fn extract_mutations(input_bam: &str, reference_genome: &str) {
                       {hmaj_vaf:.3}\t{hmin_vaf:.3}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                       h0[0], h0[1], h0[2], h0[3],
                       h1[0], h1[1], h1[2], h1[3]);
+        }
+    }
+}
+
+fn error_contexts(input_bam: &str, reference_genome: &str, variants_vcf: &str) {
+
+    let chromosome_name = String::from("chr20");
+
+    // read variants into a set, we ignore these positions
+    let mut variant_mask: HashSet< (String, usize) > = HashSet::new();
+    let mut bcf = BcfReader::from_path(variants_vcf).expect("Error opening file.");
+    for v in bcf.records() {
+        let vcf_record = v.unwrap();
+        let name = vcf_record.header().rid2name(vcf_record.rid().unwrap()).unwrap();
+        let name_str = String::from_utf8(name.to_vec()).unwrap();
+        let pos = vcf_record.pos() as usize;
+        variant_mask.insert( (name_str, pos) );
+    }
+
+    // set up header and faidx for pulling reference sequence
+    let faidx = faidx::Reader::from_path(reference_genome).expect("Could not read reference genome:");
+    let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
+    let header = bam::Header::from_template(bam.header());
+    let header_view = bam::HeaderView::from_header(&header);
+    let tid = header_view.tid(chromosome_name.as_bytes()).unwrap();
+    let chromosome_length = header_view.target_len(tid).unwrap() as usize;
+    let mut chromosome_sequence = faidx.fetch_seq_string(chromosome_name.as_str(), 0, chromosome_length).unwrap();
+    chromosome_sequence.make_ascii_uppercase();
+    let chromosome_bytes = chromosome_sequence.as_bytes();
+    
+   let mut context_counts = HashMap::new();
+   let mut error_counts = HashMap::new();
+
+    // go to chromosome of interest
+    bam.fetch(chromosome_name.as_str()).unwrap();
+    for p in bam.pileup() {
+        let pileup = p.unwrap();
+        
+        let reference_position = pileup.pos() as usize;
+        let reference_base = chromosome_bytes[reference_position] as char;
+        let reference_base_index = base2index(reference_base) as u32;
+
+        if reference_base == 'N' {
+            continue;
+        }
+
+        let key = (chromosome_name.clone(), reference_position);
+        if variant_mask.contains( &key ) {
+            continue;
+        }
+
+        let reference_context_fwd = chromosome_bytes[ (reference_position - 2)..(reference_position + 3)].to_vec();
+        let context_str_fwd = String::from_utf8(reference_context_fwd.clone()).unwrap();
+        
+        let reference_context_rev = bio::alphabets::dna::revcomp(reference_context_fwd);
+        let context_str_rev = String::from_utf8(reference_context_rev.clone()).unwrap();
+        
+        if context_str_fwd.contains("N") {
+            continue;
+        }
+
+        for a in pileup.alignments() {
+            if let Some(qpos) = a.qpos() {
+                let read_base = a.record().seq()[qpos] as char;
+                let bi = base2index(read_base) as u32;
+
+                let (c, eb)  = match a.record().is_reverse() {
+                    false => (&context_str_fwd, read_base), 
+                    true => (&context_str_rev, bio::alphabets::dna::complement(read_base as u8) as char)
+                };
+
+                let cc = context_counts.entry( c.clone() ).or_insert( 0usize );
+                
+                if bi != reference_base_index {
+                    let ec = error_counts.entry( (c.clone(), eb) ).or_insert( 0usize );
+                    *ec += 1;
+                }
+                *cc += 1;
+            }
+        }
+    }
+    
+    println!("context\terror\tnum_errors\ttotal_observations\terror_probability");
+    for context in context_counts.keys().sorted() {
+
+        for b in [ 'A', 'C', 'G', 'T' ] {
+            if error_counts.contains_key( &(context.to_string(), b)) {
+                let count = context_counts.get( context ).unwrap();
+                let errors = error_counts.get( &(context.to_string(), b) ).unwrap();
+                let p = *errors as f64 / *count as f64;
+                println!("{context}\t{b}\t{errors}\t{count}\t{p:.4}");
+            }
         }
     }
 }
