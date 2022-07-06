@@ -35,6 +35,73 @@ fn main() {
     }
 }
 
+struct PileupStats
+{
+    // this is indexed by base (dim four), haplotype (two), strand (two)
+    base_counts: [u32; 16],
+    mean_mapq: f32
+}
+
+impl PileupStats {
+    fn get(&self, b: u32, h: u32, s: u32) -> u32 {
+        let i = (h * 8) + (s * 4) + b;
+        return self.base_counts[ i as usize ];
+    }
+
+    fn increment(&mut self, b: u32, h: u32, s: u32) -> () {
+        let i = (h * 8) + (s * 4) + b;
+        self.base_counts[i as usize] += 1;
+    }
+
+    fn get_count_on_haplotype(&self, b: u32, h: u32) -> u32 {
+        return self.get(b, h, 0) + self.get(b, h, 1);
+    }
+
+    fn get_haplotype_depth(&self, h: u32) -> u32 {
+        let mut sum = 0;
+        let lo:usize = (h * 8).try_into().unwrap();
+        let hi:usize = ((h+1) * 8).try_into().unwrap();
+
+        for i in lo..hi {
+            sum += self.base_counts[i];
+            //println!("{i}\t{lo}\t{hi}\t{}\t{sum}", self.base_counts[i]);
+        }
+        return sum;
+    }
+
+    fn get_haplotype_counts(&self, h: u32) -> [u32; 4] {
+        let mut a: [u32; 4] = [0; 4];
+        for bi in 0u32..4u32 {
+            a[bi as usize] = self.get(bi, h, 0) + self.get(bi, h, 1);
+        }
+        return a;
+    }
+
+    fn from_pileup(alignments: rust_htslib::bam::pileup::Alignments<'_>) -> PileupStats {
+        let mut ps = PileupStats { base_counts: [0; 16], mean_mapq: 0.0 };
+        let mut sum_mapq: f32 = 0.0;
+        let mut n: f32 = 0.0;
+
+        for a in alignments {
+            if let Some(qpos) = a.qpos() {
+                if let Some(mut hi) = haplotype_index(&a.record()) {
+                    let read_base = a.record().seq()[qpos] as char;
+                    hi -= 1; // phasing programs annotate with 1/2, we use 0/1
+                    let bi = base2index(read_base) as u32;
+                    let si = a.record().is_reverse() as u32;
+                    ps.increment(bi, hi as u32, si);
+                    sum_mapq += a.record().mapq() as f32;
+                    n += 1.0;
+                    //println!("\t{read_base}\t{bi}\t{hi}\t{si}\t{}", *ps.get(bi, hi as u32, si));
+                }
+            }
+        }
+
+        ps.mean_mapq = sum_mapq / n;
+        return ps;
+    }
+}
+
 fn base2index(base: char) -> i32 {
     return match base {
         'A' => 0,
@@ -61,11 +128,13 @@ fn haplotype_index(record: &bam::Record) -> Option<i32> {
 fn extract_mutations(input_bam: &str, reference_genome: &str) {
 
     let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
-    println!("chromosome\tposition\treference_base\tvariant_base\tcanonical_type\tcanonical_context\taligned_depth\t\
+    println!("chromosome\tposition\treference_base\tvariant_base\tcanonical_type\tcanonical_context\taligned_depth\tmean_mapq\t\
               hmajor_variant_count\thminor_variant_count\thmajor_vaf\thminor_vaf\th1_a\th1_c\th1_g\th1_t\th2_a\th2_c\th2_g\th2_t");
 
     let chromosome_name = "chr20";
     let min_variant_observations = 5;
+    let max_variant_minor_observations = 1;
+    let min_variant_observations_per_strand = 1;
 
     // set up header and faidx for pulling reference sequence
     let faidx = faidx::Reader::from_path(reference_genome).expect("Could not read reference genome:");
@@ -83,43 +152,35 @@ fn extract_mutations(input_bam: &str, reference_genome: &str) {
     for p in bam.pileup() {
         let pileup = p.unwrap();
         
-        let mut aligned_depth = 0;
-
-        // four bases, on two haplotypes
-        let mut base_counts: [u32; 8] = [0; 8];
-        let mut haplotype_depth: [u32; 2] = [0; 2];
         //println!("processing {}", pileup.pos() + 1);
-
-        for alignment in pileup.alignments() {
-            if let Some(qpos) = alignment.qpos() {
-                if let Some(haplotype_index) = haplotype_index(&alignment.record()) {
-                    let read_base = alignment.record().seq()[qpos] as char;
-                    let bi = base2index(read_base);
-                    let bci = (haplotype_index - 1) * 4 + bi;
-                    //println!("\t{haplotype_index}\t{read_base}\t{bi}\t{bci}");
-                    base_counts[bci as usize] += 1;
-                    aligned_depth += 1;
-                    haplotype_depth[ (haplotype_index - 1) as usize ] += 1;
-                }
-            }
-        }
+        let ps = PileupStats::from_pileup(pileup.alignments());
 
         let reference_position = pileup.pos() as usize;
         let reference_base = chromosome_bytes[reference_position] as char;
-        let reference_base_index = base2index(reference_base) as usize;
+        let reference_base_index = base2index(reference_base) as u32;
+
+        // Calculate most frequently observed non-reference base on either haplotype
         let mut max_variant_count = 0;
         let mut max_variant_index = 0;
         let mut max_haplotype_index = 0;
 
-        for i in 0usize..8usize {
-            if i != reference_base_index && i != reference_base_index + 4 && base_counts[i] > max_variant_count {
-                max_variant_count = base_counts[i];
-                max_variant_index = i % 4;
-                max_haplotype_index = i / 4;
+        for hi in 0u32..2u32 {
+            for bi in 0u32..4u32 {
+                let b0 = ps.get(bi, hi, 0);
+                let b1 = ps.get(bi, hi, 1);
+                if bi != reference_base_index && (b0 + b1) > max_variant_count && 
+                    b0 >= min_variant_observations_per_strand && b1 >= min_variant_observations_per_strand {
+                    max_variant_count = b0 + b1;
+                    max_variant_index = bi;
+                    max_haplotype_index = hi;
+                }
             }
         }
 
-        if max_variant_count >= min_variant_observations && reference_base != 'N' {
+        let minor_haplotype_index = 1 - max_haplotype_index;
+        let minor_variant_count = ps.get_count_on_haplotype(max_variant_index, minor_haplotype_index);
+
+        if max_variant_count >= min_variant_observations && minor_variant_count <= max_variant_minor_observations && reference_base != 'N' {
 
             // grab reference context
             //let mut reference_context = Vec::new();
@@ -145,19 +206,18 @@ fn extract_mutations(input_bam: &str, reference_genome: &str) {
             // read support statistics
             let position = pileup.pos() + 1; // to match vcf
             
-            let hmaj_vaf = max_variant_count as f32 / haplotype_depth[max_haplotype_index] as f32;
+            let hmaj_vaf = max_variant_count as f32 / ps.get_haplotype_depth(max_haplotype_index) as f32;
+            let hmin_vaf = minor_variant_count as f32 / ps.get_haplotype_depth(minor_haplotype_index) as f32;
             
-            let minor_haplotype_index = 1 - max_haplotype_index;
-            let minor_variant_count = base_counts[ minor_haplotype_index * 4 + max_variant_index];
-            let hmin_vaf = minor_variant_count as f32 / haplotype_depth[minor_haplotype_index] as f32;
-            
+            let h0 = ps.get_haplotype_counts(max_haplotype_index);
+            let h1 = ps.get_haplotype_counts(minor_haplotype_index);
+            let mean_mapq = ps.mean_mapq;
+            let aligned_depth = ps.get_haplotype_depth(0) + ps.get_haplotype_depth(1);
             println!("{chromosome_name}\t{position}\t{reference_base}\t{variant_base}\t{mutation_type_str}\t\
-                      {context_str}\t{aligned_depth}\t{max_variant_count}\t{minor_variant_count}\t\
+                      {context_str}\t{aligned_depth}\t{mean_mapq}\t{max_variant_count}\t{minor_variant_count}\t\
                       {hmaj_vaf:.3}\t{hmin_vaf:.3}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                      base_counts[0], base_counts[1], base_counts[2], base_counts[3],
-                      base_counts[4], base_counts[5], base_counts[6], base_counts[7]);
-            // depth {} {} {} {} {} {}", 
-            //    pileup.pos(), reference_base, aligned_depth, max_variant_index, base_counts[0], base_counts[1], base_counts[2], base_counts[3]);
+                      h0[0], h0[1], h0[2], h0[3],
+                      h1[0], h1[1], h1[2], h1[3]);
         }
     }
 }
