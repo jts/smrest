@@ -1,4 +1,5 @@
 use rust_htslib::{bam, faidx, bam::Read, bam::record::Aux};
+use std::collections::HashMap;
 use clap::{App, SubCommand, Arg};
 
 fn main() {
@@ -35,6 +36,39 @@ fn main() {
     }
 }
 
+// A cache storing the haplotype tag for every read processed
+// We need this because bam_get_aux is O(N)
+struct ReadHaplotypeCache
+{
+    cache: HashMap<String, i32>
+}
+
+impl ReadHaplotypeCache
+{
+    fn key(record: &bam::Record) -> String {
+        let s = String::from_utf8(record.qname().to_vec()).unwrap();
+        return s;
+    }
+
+    fn update(&mut self, key: &String, record: &bam::Record) -> Option<i32> {
+        if let Some(hi) = get_haplotag_from_record(record) {
+            self.cache.insert(key.clone(), hi);
+            return Some(hi);
+        } else {
+            return None;
+        }
+    }
+
+    fn get(&mut self, record: &bam::Record) -> Option<i32> {
+        let s = ReadHaplotypeCache::key(record);
+        let x = self.cache.get(&s);
+        match x {
+            Some(value) => return Some(*value),
+            None => return self.update(&s, record)
+        }
+    }
+}
+
 struct PileupStats
 {
     // this is indexed by base (dim four), haplotype (two), strand (two)
@@ -43,6 +77,7 @@ struct PileupStats
 }
 
 impl PileupStats {
+    #[inline(always)]
     fn get(&self, b: u32, h: u32, s: u32) -> u32 {
         let i = (h * 8) + (s * 4) + b;
         return self.base_counts[ i as usize ];
@@ -64,7 +99,6 @@ impl PileupStats {
 
         for i in lo..hi {
             sum += self.base_counts[i];
-            //println!("{i}\t{lo}\t{hi}\t{}\t{sum}", self.base_counts[i]);
         }
         return sum;
     }
@@ -77,28 +111,36 @@ impl PileupStats {
         return a;
     }
 
-    fn from_pileup(alignments: rust_htslib::bam::pileup::Alignments<'_>) -> PileupStats {
-        let mut ps = PileupStats { base_counts: [0; 16], mean_mapq: 0.0 };
+    fn new() -> PileupStats {
+        let ps = PileupStats { base_counts: [0; 16], mean_mapq: 0.0 };
+        return ps;
+    }
+
+    fn clear(& mut self) -> () {
+        self.base_counts = [0; 16];
+        self.mean_mapq = 0.0;
+    }
+
+    fn fill_pileup(& mut self, cache: &mut ReadHaplotypeCache, alignments: rust_htslib::bam::pileup::Alignments<'_>) -> () {
+        self.clear();
         let mut sum_mapq: f32 = 0.0;
         let mut n: f32 = 0.0;
 
         for a in alignments {
             if let Some(qpos) = a.qpos() {
-                if let Some(mut hi) = haplotype_index(&a.record()) {
+                if let Some(mut hi) = cache.get(&a.record()) {
                     let read_base = a.record().seq()[qpos] as char;
                     hi -= 1; // phasing programs annotate with 1/2, we use 0/1
                     let bi = base2index(read_base) as u32;
                     let si = a.record().is_reverse() as u32;
-                    ps.increment(bi, hi as u32, si);
+                    self.increment(bi, hi as u32, si);
                     sum_mapq += a.record().mapq() as f32;
                     n += 1.0;
                     //println!("\t{read_base}\t{bi}\t{hi}\t{si}\t{}", *ps.get(bi, hi as u32, si));
                 }
             }
         }
-
-        ps.mean_mapq = sum_mapq / n;
-        return ps;
+        self.mean_mapq = sum_mapq / n;
     }
 }
 
@@ -112,7 +154,7 @@ fn base2index(base: char) -> i32 {
     };
 }
 
-fn haplotype_index(record: &bam::Record) -> Option<i32> {
+fn get_haplotag_from_record(record: &bam::Record) -> Option<i32> {
     match record.aux(b"HP") {
         Ok(value) => {
             if let Aux::I32(v) = value {
@@ -146,6 +188,9 @@ fn extract_mutations(input_bam: &str, reference_genome: &str) {
     let mut chromosome_sequence = faidx.fetch_seq_string(chromosome_name, 0, chromosome_length).unwrap();
     chromosome_sequence.make_ascii_uppercase();
     let chromosome_bytes = chromosome_sequence.as_bytes();
+    
+    let mut cache = ReadHaplotypeCache { cache: HashMap::new() };
+    let mut ps = PileupStats::new();
 
     // go to chromosome of interest
     bam.fetch(chromosome_name).unwrap();
@@ -153,11 +198,15 @@ fn extract_mutations(input_bam: &str, reference_genome: &str) {
         let pileup = p.unwrap();
         
         //println!("processing {}", pileup.pos() + 1);
-        let ps = PileupStats::from_pileup(pileup.alignments());
+        ps.fill_pileup(&mut cache, pileup.alignments());
 
         let reference_position = pileup.pos() as usize;
         let reference_base = chromosome_bytes[reference_position] as char;
         let reference_base_index = base2index(reference_base) as u32;
+
+        if reference_position > 1000000 {
+            break;
+        }
 
         // Calculate most frequently observed non-reference base on either haplotype
         let mut max_variant_count = 0;
@@ -183,8 +232,6 @@ fn extract_mutations(input_bam: &str, reference_genome: &str) {
         if max_variant_count >= min_variant_observations && minor_variant_count <= max_variant_minor_observations && reference_base != 'N' {
 
             // grab reference context
-            //let mut reference_context = Vec::new();
-            //reference_context.clone_from_slice( &chromosome_bytes[ (reference_position - 1)..(reference_position + 2)] );
             let mut reference_context = chromosome_bytes[ (reference_position - 1)..(reference_position + 2)].to_vec();
 
             let bases = "ACGT";
