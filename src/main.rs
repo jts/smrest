@@ -315,6 +315,7 @@ fn error_contexts(input_bam: &str, reference_genome: &str, variants_vcf: &str) {
     
    let mut context_counts = HashMap::new();
    let mut error_counts = HashMap::new();
+   let mut error_prob = HashMap::new();
 
     // go to chromosome of interest
     bam.fetch(chromosome_name.as_str()).unwrap();
@@ -345,17 +346,30 @@ fn error_contexts(input_bam: &str, reference_genome: &str, variants_vcf: &str) {
         }
 
         for a in pileup.alignments() {
+
+            if a.record().seq().len() == 0 {
+                continue;
+            }
             if let Some(qpos) = a.qpos() {
                 let read_base = a.record().seq()[qpos] as char;
                 let bi = base2index(read_base) as u32;
 
-                let (c, eb)  = match a.record().is_reverse() {
+                let (c, mut eb)  = match a.record().is_reverse() {
                     false => (&context_str_fwd, read_base), 
                     true => (&context_str_rev, bio::alphabets::dna::complement(read_base as u8) as char)
                 };
-
+                eb = 'N';
+                
+                // update number of times context has been seen
                 let cc = context_counts.entry( c.clone() ).or_insert( 0usize );
                 
+                // update q-score counts
+                let ep = error_prob.entry( c.clone() ).or_insert( 0.0f64 );
+                let q = a.record().qual()[qpos] as f64;
+                let base: f64 = 10.0;
+                *ep += base.powf(-q / 10.0);
+                
+                // update observed basecalling error count
                 if bi != reference_base_index {
                     let ec = error_counts.entry( (c.clone(), eb) ).or_insert( 0usize );
                     *ec += 1;
@@ -365,15 +379,21 @@ fn error_contexts(input_bam: &str, reference_genome: &str, variants_vcf: &str) {
         }
     }
     
-    println!("context\terror\tnum_errors\ttotal_observations\terror_probability");
+    println!("context\terror\tnum_errors\ttotal_observations\tobserved_error_rate\tobserved_qscore\tmean_quality_prob\tmean_qscore");
     for context in context_counts.keys().sorted() {
 
-        for b in [ 'A', 'C', 'G', 'T' ] {
+        for b in [ 'A', 'C', 'G', 'T', 'N' ] {
             if error_counts.contains_key( &(context.to_string(), b)) {
                 let count = context_counts.get( context ).unwrap();
                 let errors = error_counts.get( &(context.to_string(), b) ).unwrap();
-                let p = *errors as f64 / *count as f64;
-                println!("{context}\t{b}\t{errors}\t{count}\t{p:.4}");
+                let sum_p = error_prob.get( context ).unwrap();
+
+                let calling_error_rate = *errors as f64 / *count as f64;
+                let calling_error_q = -10.0 * calling_error_rate.log10();
+
+                let mean_qprob = sum_p / *count as f64;
+                let mean_qscore = -10.0 * mean_qprob.log10();
+                println!("{context}\t{b}\t{errors}\t{count}\t{calling_error_rate:.4}\t{calling_error_q:.1}\t{mean_qprob:.4}\t{mean_qscore:.1}");
             }
         }
     }
