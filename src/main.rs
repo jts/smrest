@@ -1,10 +1,23 @@
 use rust_htslib::{bam, faidx, bam::Read, bam::record::Aux};
 use rust_htslib::bcf::{Reader as BcfReader, Read as BcfRead};
 use std::collections::{HashSet, HashMap};
-use clap::{App, SubCommand, Arg};
+use clap::{App, SubCommand, Arg, value_t};
 use itertools::Itertools;
 use rand::prelude::*;
 use statrs::distribution::{Beta, Poisson, Binomial, Discrete, ContinuousCDF};
+
+mod pileup_stats;
+use crate::pileup_stats::PileupStats;
+use crate::pileup_stats::base2index;
+
+pub struct ModelParameters {
+    mutation_rate: f64,
+    heterozygosity: f64,
+    ccf_dist: Beta,
+    depth_dist: Poisson,
+    purity: f64,
+    error_rate: f64
+}
 
 fn main() {
     let matches = App::new("smrest")
@@ -13,6 +26,14 @@ fn main() {
         .about("Toolkit for estimating somatic mutation rate from long reads")
         .subcommand(SubCommand::with_name("sim-pileup")
                 .about("simulate pileup data")
+                .arg(Arg::with_name("purity")
+                    .long("purity")
+                    .takes_value(true)
+                    .help("purity of tumor sample"))
+                .arg(Arg::with_name("depth")
+                    .long("depth")
+                    .takes_value(true)
+                    .help("mean sequencing depth"))
                 .arg(Arg::with_name("genome")
                     .short('g')
                     .long("genome")
@@ -54,13 +75,25 @@ fn main() {
                        matches.value_of("genome").unwrap(),
                        matches.value_of("vcf").unwrap());
     } else if let Some(matches) = matches.subcommand_matches("sim-pileup") {
-        sim_pileup(matches.value_of("genome").unwrap());
+
+        let depth_lambda = value_t!(matches, "depth", f64).unwrap_or(50.0);
+        let purity = value_t!(matches, "purity", f64).unwrap_or(0.75);
+
+        let params = ModelParameters { 
+            mutation_rate: 5.0 / 1000000.0, // per haplotype
+            heterozygosity: 1.0 / 2000.0, // per haplotype
+            ccf_dist: Beta::new(9.0, 1.0).unwrap(),
+            depth_dist: Poisson::new(depth_lambda).unwrap(),
+            purity: purity,
+            error_rate: 0.02
+        };
+        sim_pileup(& params, matches.value_of("genome").unwrap());
     }
 }
 
 // A cache storing the haplotype tag for every read processed
 // We need this because bam_get_aux is O(N)
-struct ReadHaplotypeCache
+pub struct ReadHaplotypeCache
 {
     cache: HashMap<String, i32>
 }
@@ -72,7 +105,7 @@ impl ReadHaplotypeCache
         return s;
     }
 
-    fn update(&mut self, key: &String, record: &bam::Record) -> Option<i32> {
+    pub fn update(&mut self, key: &String, record: &bam::Record) -> Option<i32> {
         if let Some(hi) = get_haplotag_from_record(record) {
             self.cache.insert(key.clone(), hi);
             return Some(hi);
@@ -81,7 +114,7 @@ impl ReadHaplotypeCache
         }
     }
 
-    fn get(&mut self, record: &bam::Record) -> Option<i32> {
+    pub fn get(&mut self, record: &bam::Record) -> Option<i32> {
         let s = ReadHaplotypeCache::key(record);
         let x = self.cache.get(&s);
         match x {
@@ -91,90 +124,6 @@ impl ReadHaplotypeCache
     }
 }
 
-struct PileupStats
-{
-    // this is indexed by base (dim four), haplotype (two), strand (two)
-    base_counts: [u32; 16],
-    mean_mapq: f32
-}
-
-impl PileupStats {
-    #[inline(always)]
-    fn get(&self, b: u32, h: u32, s: u32) -> u32 {
-        let i = (h * 8) + (s * 4) + b;
-        return self.base_counts[ i as usize ];
-    }
-
-    fn increment(&mut self, b: u32, h: u32, s: u32) -> () {
-        let i = (h * 8) + (s * 4) + b;
-        self.base_counts[i as usize] += 1;
-    }
-
-    fn get_count_on_haplotype(&self, b: u32, h: u32) -> u32 {
-        return self.get(b, h, 0) + self.get(b, h, 1);
-    }
-
-    fn get_haplotype_depth(&self, h: u32) -> u32 {
-        let mut sum = 0;
-        let lo:usize = (h * 8).try_into().unwrap();
-        let hi:usize = ((h+1) * 8).try_into().unwrap();
-
-        for i in lo..hi {
-            sum += self.base_counts[i];
-        }
-        return sum;
-    }
-
-    fn get_haplotype_counts(&self, h: u32) -> [u32; 4] {
-        let mut a: [u32; 4] = [0; 4];
-        for bi in 0u32..4u32 {
-            a[bi as usize] = self.get(bi, h, 0) + self.get(bi, h, 1);
-        }
-        return a;
-    }
-
-    fn new() -> PileupStats {
-        let ps = PileupStats { base_counts: [0; 16], mean_mapq: 0.0 };
-        return ps;
-    }
-
-    fn clear(& mut self) -> () {
-        self.base_counts = [0; 16];
-        self.mean_mapq = 0.0;
-    }
-
-    fn fill_pileup(& mut self, cache: &mut ReadHaplotypeCache, alignments: rust_htslib::bam::pileup::Alignments<'_>) -> () {
-        self.clear();
-        let mut sum_mapq: f32 = 0.0;
-        let mut n: f32 = 0.0;
-
-        for a in alignments {
-            if let Some(qpos) = a.qpos() {
-                if let Some(mut hi) = cache.get(&a.record()) {
-                    let read_base = a.record().seq()[qpos] as char;
-                    hi -= 1; // phasing programs annotate with 1/2, we use 0/1
-                    let bi = base2index(read_base) as u32;
-                    let si = a.record().is_reverse() as u32;
-                    self.increment(bi, hi as u32, si);
-                    sum_mapq += a.record().mapq() as f32;
-                    n += 1.0;
-                    //println!("\t{read_base}\t{bi}\t{hi}\t{si}\t{}", *ps.get(bi, hi as u32, si));
-                }
-            }
-        }
-        self.mean_mapq = sum_mapq / n;
-    }
-}
-
-fn base2index(base: char) -> i32 {
-    return match base {
-        'A' => 0,
-        'C' => 1,
-        'G' => 2,
-        'T' => 3,
-        _ => -1
-    };
-}
 
 fn get_haplotag_from_record(record: &bam::Record) -> Option<i32> {
     match record.aux(b"HP") {
@@ -399,9 +348,17 @@ fn error_contexts(input_bam: &str, reference_genome: &str, variants_vcf: &str) {
     }
 }
 
+fn rand_base_not(rng: &mut ThreadRng, curr_base: u8) -> u8 {
+    let bases = [ 'A', 'C', 'G', 'T' ];
+    let mut base = curr_base;
+    while base == curr_base {
+        base = bases[ rng.gen_range(0..4) ] as u8;
+    }
+    return base;
+}
+
 fn mutate_haplotypes(haplotypes: &mut [ Vec<u8> ], rate: f64) -> () {
     // Set up a generator to select random bases
-    let bases = [ 'A', 'C', 'G', 'T' ];
     let mut rng = rand::thread_rng();
 
     // generate variants
@@ -410,11 +367,7 @@ fn mutate_haplotypes(haplotypes: &mut [ Vec<u8> ], rate: f64) -> () {
         for i in 0..haplotypes[hi].len() {
             if rng.gen::<f64>() < rate {
                 let curr_base = haplotypes[hi][i];
-                let mut var_base = curr_base;
-                while var_base == curr_base {
-                    var_base = bases[ rng.gen_range(0..4) ] as u8;
-                }
-                haplotypes[hi][i] = var_base;
+                haplotypes[hi][i] = rand_base_not(&mut rng, curr_base);
                 _var_count += 1;
             }
         }
@@ -422,16 +375,17 @@ fn mutate_haplotypes(haplotypes: &mut [ Vec<u8> ], rate: f64) -> () {
     }
 }
 
-fn calculate_class_probabilities(alt_count: u64, ref_count: u64, error_rate: f64, purity: f64, ccf_dist: &Beta, mutation_rate: f64, heterozygosity: f64) -> [f64;3]
+fn calculate_class_probabilities_phased(alt_count: u64, ref_count: u64, params: &ModelParameters) -> [f64;3]
 {
-
     let depth = ref_count + alt_count;
+    //
     // P(somatic | data) = P(data | somatic) P(somatic) / sum_class P(data | class )
+    //
     // P(data | ref) = Binom(alt_count, ref_count + alt_count, error_rate)
-    let p_data_ref = Binomial::new(error_rate, depth).unwrap().pmf(alt_count);
+    let p_data_ref = Binomial::new(params.error_rate, depth).unwrap().pmf(alt_count);
 
     // P(data | het) = Binom(alt_count, ref_count + alt_count, 1 - error_rate)
-    let p_data_het = Binomial::new(1.0 - error_rate, depth).unwrap().pmf(alt_count);
+    let p_data_het = Binomial::new(1.0 - params.error_rate, depth).unwrap().pmf(alt_count);
     
     // P(data | somatic) = sum_c Binom(alt_count, ref_count + alt_count, purity * c * (1 - error_rate) + (1 - purity*c) * error_rate ) P(c)
     let bins = 10;
@@ -441,19 +395,19 @@ fn calculate_class_probabilities(alt_count: u64, ref_count: u64, error_rate: f64
         let start = f64::from(i) * step;
         let end = f64::from(i + 1) * step;
         let c = (end + start) / 2.0;
-        let p_c = ccf_dist.cdf(end) - ccf_dist.cdf(start);
+        let p_c = params.ccf_dist.cdf(end) - params.ccf_dist.cdf(start);
 
-        let p_read_from_mutated_haplotype = purity * c;
-        let t1 = p_read_from_mutated_haplotype * (1.0 - error_rate);
-        let t2 = (1.0 - p_read_from_mutated_haplotype) * error_rate;
+        let p_read_from_mutated_haplotype = params.purity * c;
+        let t1 = p_read_from_mutated_haplotype * (1.0 - params.error_rate);
+        let t2 = (1.0 - p_read_from_mutated_haplotype) * params.error_rate;
 
         let p_data_somatic_at_c = Binomial::new(t1 + t2, depth).unwrap().pmf(alt_count);
         p_data_somatic += p_data_somatic_at_c * p_c;
     }
 
     // priors
-    let p_het = heterozygosity;
-    let p_somatic = mutation_rate;
+    let p_het = params.heterozygosity;
+    let p_somatic = params.mutation_rate;
     let p_ref = 1.0 - p_het - p_somatic;
 
     let sum = p_data_ref * p_ref + p_data_het * p_het + p_data_somatic * p_somatic;
@@ -465,15 +419,123 @@ fn calculate_class_probabilities(alt_count: u64, ref_count: u64, error_rate: f64
     return [ p_ref_data, p_het_data, p_somatic_data ];
 }
 
-fn sim_pileup(reference_genome: &str)
+fn calculate_class_probabilities_unphased(alt_count: u64, ref_count: u64, params: &ModelParameters) -> [f64;3]
 {
-    let summary = false;
-    let mutation_rate = 5.0 / 1000000.0; // per haplotype
-    let heterozygosity = 1.0 / 2000.0; // per haplotype
-    let ccf_dist = Beta::new(9.0, 1.0).unwrap();
-    let depth_dist = Poisson::new(50.0).unwrap();
-    let purity = 0.75;
-    let error_rate = 0.02;
+    let depth = ref_count + alt_count;
+    //
+    // P(somatic | data) = P(data | somatic) P(somatic) / sum_class P(data | class )
+    //
+
+    // P(data | ref) = Binom(alt_count, ref_count + alt_count, error_rate)
+    let p_data_ref = Binomial::new(params.error_rate, depth).unwrap().pmf(alt_count);
+
+    // P(data | het) = Binom(alt_count, ref_count + alt_count, 1 - error_rate)
+    let p_data_het = Binomial::new(0.5 * (1.0 - params.error_rate) + 0.5 * params.error_rate, depth).unwrap().pmf(alt_count);
+    
+    // P(data | somatic) = sum_c Binom(alt_count, ref_count + alt_count, purity * c * (1 - error_rate) + (1 - purity*c) * error_rate ) P(c)
+    let bins = 10;
+    let step = 1.0 / 10 as f64;
+    let mut p_data_somatic = 0.0;
+    for i in 0..bins {
+        let start = f64::from(i) * step;
+        let end = f64::from(i + 1) * step;
+        let c = (end + start) / 2.0;
+        let p_c = params.ccf_dist.cdf(end) - params.ccf_dist.cdf(start);
+
+        let p_read_from_mutated_haplotype = params.purity * c;
+        let t1 = p_read_from_mutated_haplotype * (1.0 - params.error_rate);
+        let t2 = (1.0 - p_read_from_mutated_haplotype) * params.error_rate;
+
+        let p_data_somatic_at_c = Binomial::new(t1 + t2, depth).unwrap().pmf(alt_count);
+        p_data_somatic += p_data_somatic_at_c * p_c;
+    }
+
+    // priors
+    let p_het = params.heterozygosity;
+    let p_somatic = params.mutation_rate;
+    let p_ref = 1.0 - p_het - p_somatic;
+
+    let sum = p_data_ref * p_ref + p_data_het * p_het + p_data_somatic * p_somatic;
+    
+    let p_ref_data = p_data_ref * p_ref / sum;
+    let p_het_data = p_data_het * p_het / sum;
+    let p_somatic_data = p_data_somatic * p_somatic / sum;
+
+    return [ p_ref_data, p_het_data, p_somatic_data ];
+}
+
+pub struct SimulationStats
+{
+    model_name: String,
+    class_posterior_sums: [f64; 3],
+    num_somatic_calls: usize,
+    num_somatic_true: usize,
+    num_somatic_correct: usize,
+    num_het_true: usize
+
+}
+
+impl SimulationStats {
+
+    pub fn new(name: String) -> SimulationStats {
+        let r = SimulationStats { model_name: name, 
+                                 class_posterior_sums: [0.0; 3], 
+                                 num_somatic_calls: 0,
+                                 num_somatic_true: 0,
+                                 num_somatic_correct: 0,
+                                 num_het_true: 0 };
+        return r;
+    }
+
+    pub fn update(& mut self, is_het: bool, is_somatic: bool, class_posterior: &[f64; 3]) -> () {
+        for i in 0..class_posterior.len() {
+            self.class_posterior_sums[i] += class_posterior[i];
+        }
+
+        let mut p_max = 0.0;
+        let mut idx_max = 0;
+        for k in 0..class_posterior.len() {
+            if class_posterior[k] > p_max {
+                p_max = class_posterior[k];
+                idx_max = k;
+            }
+        }
+
+        let is_somatic_call = idx_max == 2;
+        if is_somatic_call {
+            self.num_somatic_calls += 1;
+        }
+
+        if is_somatic_call && is_somatic {
+            self.num_somatic_correct += 1;
+        }
+
+        if is_somatic { 
+            self.num_somatic_true += 1;
+        }
+
+        if is_het { 
+            self.num_het_true += 1;
+        }
+    }
+
+    pub fn print(& self, params: & ModelParameters) {
+        let sens = self.num_somatic_correct as f64 / self.num_somatic_true as f64;
+        let prec = self.num_somatic_correct as f64 / self.num_somatic_calls as f64;
+        let f1 = 2.0 * sens * prec / (sens + prec);
+        let ccf_mean = params.ccf_dist.shape_a() / (params.ccf_dist.shape_a() + params.ccf_dist.shape_b());
+
+        println!("{}\t{:.3}\t{:.3}\t{:.3}\t{}\t{}\t{:.1}\t{:.1}\t{:.1}\t{}\t{:.3}\t{:.3}\t{:.3}",
+            self.model_name, params.purity, params.depth_dist.lambda(), ccf_mean,
+            self.num_somatic_true, self.num_het_true, 
+            self.class_posterior_sums[0], self.class_posterior_sums[1], self.class_posterior_sums[2],
+            self.num_somatic_calls, sens, prec, f1);
+    }
+}
+
+fn sim_pileup(params: & ModelParameters, reference_genome: &str)
+{
+    let summary = true;
 
     let mut rng = rand::thread_rng();
 
@@ -487,109 +549,121 @@ fn sim_pileup(reference_genome: &str)
     chromosome_sequence.make_ascii_uppercase();
     let chromosome_bytes = chromosome_sequence.as_bytes();
     let mut germline_haplotypes = [ chromosome_bytes.to_vec(), chromosome_bytes.to_vec() ];
-    mutate_haplotypes(& mut germline_haplotypes, heterozygosity);
+    mutate_haplotypes(& mut germline_haplotypes, params.heterozygosity);
     
     let mut somatic_haplotypes = [ germline_haplotypes[0].clone(), germline_haplotypes[1].clone() ];
-    mutate_haplotypes(& mut somatic_haplotypes, mutation_rate);
+    mutate_haplotypes(& mut somatic_haplotypes, params.mutation_rate);
+
+    // structs to collect results
+    let mut phased_model_stats = SimulationStats::new("phased".to_string());
+    let mut unphased_model_stats = SimulationStats::new("unphased".to_string());
 
     // Finally, simulate some pileup data at each position on each haplotype
     if !summary {
-        println!("position\thaplotype\tclass\tis_het\tis_somatic\tccs\tref_count\talt_count\thvaf\tp_ref\tp_het\tp_somatic");
+        println!("model\tposition\thaplotype\tclass\tis_het\tis_somatic\tref_count\talt_count\thvaf\tp_ref\tp_het\tp_somatic");
     }
-
-    let mut sum_ref = 0.0;
-    let mut sum_het = 0.0;
-    let mut sum_somatic = 0.0;
-    let mut num_somatic_true = 0;
-    let mut num_somatic_calls = 0;
-    let mut num_somatic_correct = 0;
-    let mut num_het_true = 0;
 
     for j in 0..chromosome_length {
 
+        if chromosome_bytes[j] as char == 'N' {
+            continue;
+        }
+
         // depth at this position
-        let depth = depth_dist.sample(&mut rng) as u64;
+        let depth = params.depth_dist.sample(&mut rng) as u64;
         let haplotype_dist = Binomial::new(0.5, depth).unwrap();
         let h0_depth = haplotype_dist.sample(&mut rng) as u64;
         let haplotype_depths = [ h0_depth, depth - h0_depth ];
-
+        
+        // simulate a pileup
+        let mut ps = PileupStats::new();
         for i in 0..2 {
-            let is_het = germline_haplotypes[i][j] != chromosome_bytes[j];
             let is_somatic = somatic_haplotypes[i][j] != germline_haplotypes[i][j];
             let ccf = match is_somatic {
-                true => ccf_dist.sample(&mut rng),
+                true => params.ccf_dist.sample(&mut rng),
                 false => 0.0
             };
 
-            let mut ref_count = 0u64;
-            let mut alt_count = 0u64;
-
+            // simulate each read
             for _r in 0..haplotype_depths[i] {
+            
+                let strand: u32 = rng.gen_range(0..2);
+
                 // determine base for this read
                 let prob_sampled_from_somatic = match is_somatic {
-                    true => purity * ccf,
+                    true => params.purity * ccf,
                     false => 0.0
                 };
 
                 let is_tumor_read = rng.gen::<f64>() < prob_sampled_from_somatic;
-                let read_base = match is_tumor_read {
+                let mut read_base = match is_tumor_read {
                     true => somatic_haplotypes[i][j],
                     false => germline_haplotypes[i][j]
                 };
 
-                let mut ref_match = read_base == chromosome_bytes[j];
-                if rng.gen::<f64>() < error_rate {
-                    ref_match = ! ref_match;
+                // corrupt read if sequencing error
+                if rng.gen::<f64>() < params.error_rate {
+                    read_base = rand_base_not(&mut rng, read_base);
                 }
 
-                // update counts
-                ref_count += ref_match as u64;
-                alt_count += !ref_match as u64;
+                ps.increment(base2index(read_base as char) as u32, i as u32, strand);
             }
+        }
 
-            let probs = calculate_class_probabilities(alt_count, ref_count, error_rate, purity, &ccf_dist, mutation_rate, heterozygosity);
+        let ref_base_index = base2index(chromosome_bytes[j] as char) as u32;
 
-            let mut class = "REF";
-            if is_somatic { 
-                class = "SOMATIC"
-            } else if is_het {
-                class = "HET";   
-            }
+        // run phased model, collect stats
+        for i in 0usize..2usize {
+            let alt_base_index = ps.get_max_nonref_base_on_haplotype(i as u32, ref_base_index as u32);
+            let alt_count = ps.get_count_on_haplotype(alt_base_index, i as u32) as u64;
+            let ref_count = ps.get_count_on_haplotype(ref_base_index, i as u32) as u64;
 
-            let mut p_max = 0.0;
-            let mut idx_max = 0;
-            for i in 0..probs.len() {
-                if probs[i] > p_max {
-                    p_max = probs[i];
-                    idx_max = i;
-                }
-            }
+            let probs = calculate_class_probabilities_phased(alt_count, ref_count, &params);
 
             // update summary stats
-            sum_ref += probs[0];
-            sum_het += probs[1];
-            sum_somatic += probs[2];
-
-            if idx_max == 2 && is_somatic {
-                num_somatic_correct += 1;   
-            }
-            
-            if idx_max == 2 {
-                num_somatic_calls += 1;
-            }
-
-            if is_somatic { 
-                num_somatic_true += 1;
-            }
-
-            if is_het { 
-                num_het_true += 1;
-            }
+            let is_het = germline_haplotypes[i][j] != chromosome_bytes[j];
+            let is_somatic = somatic_haplotypes[i][j] != germline_haplotypes[i][j];
+            phased_model_stats.update(is_het, is_somatic, &probs);
 
             // output per-record calls, if wanted
-            let hvaf = alt_count as f64 / haplotype_depths[i] as f64; 
             if !summary {
-                println!("{j}\t{i}\t{class}\t{}\t{}\t{ccf:.3}\t\
+                let hvaf = alt_count as f64 / ps.get_haplotype_depth(i as u32) as f64; 
+                let mut class = "REF";
+                if is_somatic { 
+                    class = "SOMATIC"
+                } else if is_het {
+                    class = "HET";   
+                }
+
+                println!("phased\t{j}\t{i}\t{class}\t{}\t{}\t\
+                         {ref_count}\t{alt_count}\t{hvaf:.3}\t{:.3}\t{:.3}\t{:.3}",
+                         is_het as u8, is_somatic as u8, probs[0], probs[1], probs[2]);
+            }
+        }
+
+        // run baseline non-phased model
+        {
+            let alt_base_index = ps.get_max_nonref_base_unphased(ref_base_index as u32);
+            let alt_count = ps.get_count_unphased(alt_base_index) as u64;
+            let ref_count = ps.get_count_unphased(ref_base_index) as u64;
+            let probs = calculate_class_probabilities_unphased(alt_count, ref_count, &params);
+            
+            // update summary stats
+            let is_het = germline_haplotypes[0][j] != chromosome_bytes[j] || germline_haplotypes[1][j] != chromosome_bytes[j];
+            let is_somatic = somatic_haplotypes[0][j] != germline_haplotypes[0][j] || somatic_haplotypes[1][j] != germline_haplotypes[1][j];
+            unphased_model_stats.update(is_het, is_somatic, &probs);
+            
+            // output per-record calls, if wanted
+            if !summary {
+                let hvaf = alt_count as f64 / ps.get_depth() as f64; 
+                let mut class = "REF";
+                if is_somatic { 
+                    class = "SOMATIC"
+                } else if is_het {
+                    class = "HET";   
+                }
+
+                println!("unphased\t{j}\tboth\t{class}\t{}\t{}\t\
                          {ref_count}\t{alt_count}\t{hvaf:.3}\t{:.3}\t{:.3}\t{:.3}",
                          is_het as u8, is_somatic as u8, probs[0], probs[1], probs[2]);
             }
@@ -597,9 +671,9 @@ fn sim_pileup(reference_genome: &str)
     }
 
     if summary {
-        let sens = num_somatic_correct as f64 / num_somatic_true as f64;
-        let prec = num_somatic_correct as f64 / num_somatic_calls as f64;
-        println!("true_somatic_positions\ttrue_het_position\testimated_ref_bases\testimated_het_bases\testimated_mutated_bases\tsomatic_call_sensitivity\tsomatic_call_precision");
-        println!("{num_somatic_true}\t{num_het_true}\t{sum_ref:.1}\t{sum_het:.1}\t{sum_somatic:.1}\t{sens:.3}\t{prec:.3}");
+        println!("model\tpurity\tmean_coverage\tmean_ccf\ttrue_somatic_positions\ttrue_het_position\testimated_ref_bases\t\
+                  estimated_het_bases\testimated_mutated_bases\tnum_somatic_calls\tsomatic_call_sensitivity\tsomatic_call_precision\tf1");
+        phased_model_stats.print(& params);
+        unphased_model_stats.print(& params);
     }
 }
