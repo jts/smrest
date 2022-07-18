@@ -140,12 +140,24 @@ fn get_haplotag_from_record(record: &bam::Record) -> Option<i32> {
 
 fn extract_mutations(input_bam: &str, reference_genome: &str) {
 
+    let params = ModelParameters { 
+        mutation_rate: 5.0 / 1000000.0, // per haplotype
+        heterozygosity: 1.0 / 2000.0, // per haplotype
+        ccf_dist: Beta::new(9.0, 1.0).unwrap(),
+        depth_dist: Poisson::new(50.0).unwrap(),
+        purity: 0.75,
+        error_rate: 0.05 // R9.4 conservative
+    };
+
+
     let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
     println!("chromosome\tposition\treference_base\tvariant_base\tcanonical_type\tcanonical_context\taligned_depth\tmean_mapq\t\
-              hmajor_variant_count\thminor_variant_count\thmajor_vaf\thminor_vaf\th1_a\th1_c\th1_g\th1_t\th2_a\th2_c\th2_g\th2_t");
+              hmajor_variant_count\thminor_variant_count\thmajor_vaf\thminor_vaf\th1_a\th1_c\th1_g\th1_t\th2_a\th2_c\th2_g\th2_t\t\
+              p_ref\tp_germline\tp_somatic");
 
+    let all_positions = false;
     let chromosome_name = "chr20";
-    let min_variant_observations = 5;
+    let min_variant_observations = 3;
     let max_variant_minor_observations = 1;
     let min_variant_observations_per_strand = 1;
 
@@ -173,6 +185,10 @@ fn extract_mutations(input_bam: &str, reference_genome: &str) {
 
         let reference_position = pileup.pos() as usize;
         let reference_base = chromosome_bytes[reference_position] as char;
+        if reference_base == 'N' {
+            continue;
+        }
+
         let reference_base_index = base2index(reference_base) as u32;
 
         // Calculate most frequently observed non-reference base on either haplotype
@@ -196,13 +212,16 @@ fn extract_mutations(input_bam: &str, reference_genome: &str) {
         let minor_haplotype_index = 1 - max_haplotype_index;
         let minor_variant_count = ps.get_count_on_haplotype(max_variant_index, minor_haplotype_index);
 
-        if max_variant_count >= min_variant_observations && minor_variant_count <= max_variant_minor_observations && reference_base != 'N' {
+        if all_positions || (max_variant_count >= min_variant_observations /*&& minor_variant_count <= max_variant_minor_observations*/) {
 
             // grab reference context
             let mut reference_context = chromosome_bytes[ (reference_position - 1)..(reference_position + 2)].to_vec();
 
             let bases = "ACGT";
             let variant_base = bases.as_bytes()[max_variant_index as usize] as char;
+            
+            let ref_count = ps.get_count_on_haplotype(reference_base_index, max_haplotype_index);
+            let class_probs = calculate_class_probabilities_phased(max_variant_count as u64, ref_count as u64, &params);
             
             // grab mutation type
             let mut mutation_type: [char; 3] = [ reference_base, '>', variant_base ];
@@ -229,9 +248,10 @@ fn extract_mutations(input_bam: &str, reference_genome: &str) {
             let aligned_depth = ps.get_haplotype_depth(0) + ps.get_haplotype_depth(1);
             println!("{chromosome_name}\t{position}\t{reference_base}\t{variant_base}\t{mutation_type_str}\t\
                       {context_str}\t{aligned_depth}\t{mean_mapq}\t{max_variant_count}\t{minor_variant_count}\t\
-                      {hmaj_vaf:.3}\t{hmin_vaf:.3}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                      {hmaj_vaf:.3}\t{hmin_vaf:.3}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}",
                       h0[0], h0[1], h0[2], h0[3],
-                      h1[0], h1[1], h1[2], h1[3]);
+                      h1[0], h1[1], h1[2], h1[3],
+                      class_probs[0], class_probs[1], class_probs[2]);
         }
     }
 }
