@@ -14,7 +14,7 @@ pub struct ModelParameters {
     mutation_rate: f64,
     heterozygosity: f64,
     ccf_dist: Beta,
-    depth_dist: Poisson,
+    depth_dist: Option<Poisson>,
     purity: f64,
     error_rate: f64
 }
@@ -83,7 +83,7 @@ fn main() {
             mutation_rate: 5.0 / 1000000.0, // per haplotype
             heterozygosity: 1.0 / 2000.0, // per haplotype
             ccf_dist: Beta::new(9.0, 1.0).unwrap(),
-            depth_dist: Poisson::new(depth_lambda).unwrap(),
+            depth_dist: Some(Poisson::new(depth_lambda).unwrap()),
             purity: purity,
             error_rate: 0.02
         };
@@ -144,7 +144,7 @@ fn extract_mutations(input_bam: &str, reference_genome: &str) {
         mutation_rate: 5.0 / 1000000.0, // per haplotype
         heterozygosity: 1.0 / 2000.0, // per haplotype
         ccf_dist: Beta::new(9.0, 1.0).unwrap(),
-        depth_dist: Poisson::new(50.0).unwrap(),
+        depth_dist: None,
         purity: 0.75,
         error_rate: 0.05 // R9.4 conservative
     };
@@ -546,7 +546,7 @@ impl SimulationStats {
         let ccf_mean = params.ccf_dist.shape_a() / (params.ccf_dist.shape_a() + params.ccf_dist.shape_b());
 
         println!("{}\t{:.3}\t{:.3}\t{:.3}\t{}\t{}\t{:.1}\t{:.1}\t{:.1}\t{}\t{:.3}\t{:.3}\t{:.3}",
-            self.model_name, params.purity, params.depth_dist.lambda(), ccf_mean,
+            self.model_name, params.purity, params.depth_dist.unwrap().lambda(), ccf_mean,
             self.num_somatic_true, self.num_het_true, 
             self.class_posterior_sums[0], self.class_posterior_sums[1], self.class_posterior_sums[2],
             self.num_somatic_calls, sens, prec, f1);
@@ -590,7 +590,7 @@ fn sim_pileup(params: & ModelParameters, reference_genome: &str)
         }
 
         // depth at this position
-        let depth = params.depth_dist.sample(&mut rng) as u64;
+        let depth = params.depth_dist.unwrap().sample(&mut rng) as u64;
         let haplotype_dist = Binomial::new(0.5, depth).unwrap();
         let h0_depth = haplotype_dist.sample(&mut rng) as u64;
         let haplotype_depths = [ h0_depth, depth - h0_depth ];
