@@ -2,7 +2,7 @@
 // Copyright 2022 Ontario Institute for Cancer Research
 // Written by Jared Simpson (jared.simpson@oicr.on.ca)
 //---------------------------------------------------------
-use crate::ReadHaplotypeCache;
+use crate::utility::ReadHaplotypeCache;
 
 pub struct PileupStats
 {
