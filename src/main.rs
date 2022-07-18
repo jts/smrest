@@ -21,6 +21,7 @@ use crate::classifier::*;
 
 mod utility;
 use crate::utility::ReadHaplotypeCache;
+use crate::utility::GenomeRegions;
 
 fn main() {
     let matches = App::new("smrest")
@@ -49,6 +50,16 @@ fn main() {
                     .long("genome")
                     .takes_value(true)
                     .help("the reference genome"))
+                .arg(Arg::with_name("regions")
+                    .short('r')
+                    .long("regions")
+                    .takes_value(true)
+                    .help("only report positions within these regions"))
+                .arg(Arg::with_name("min-depth")
+                    .short('d')
+                    .long("min-depth")
+                    .takes_value(true)
+                    .help("only report positions within phased depth greater than N"))
                 .arg(Arg::with_name("input-bam")
                     .required(true)
                     .index(1)
@@ -71,8 +82,13 @@ fn main() {
                     .help("the input bam file to process"))).get_matches();
     
     if let Some(matches) = matches.subcommand_matches("extract") {
+        
+        let min_depth = value_t!(matches, "min-depth", u32).unwrap_or(30);
         extract_mutations(matches.value_of("input-bam").unwrap(),
-                          matches.value_of("genome").unwrap());
+                          matches.value_of("genome").unwrap(),
+                          min_depth,
+                          matches.value_of("regions"));
+
     } else if let Some(matches) = matches.subcommand_matches("error-contexts") {
         error_contexts(matches.value_of("input-bam").unwrap(),
                        matches.value_of("genome").unwrap(),
@@ -94,7 +110,7 @@ fn main() {
     }
 }
 
-fn extract_mutations(input_bam: &str, reference_genome: &str) {
+fn extract_mutations(input_bam: &str, reference_genome: &str, min_depth: u32, region_opt: Option<&str>) {
 
     let params = ModelParameters { 
         mutation_rate: 5.0 / 1000000.0, // per haplotype
@@ -105,13 +121,19 @@ fn extract_mutations(input_bam: &str, reference_genome: &str) {
         error_rate: 0.05 // R9.4 conservative
     };
 
-
     let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
+    let header = bam::Header::from_template(bam.header());
+    let header_view = bam::HeaderView::from_header(&header);
+    let regions = match region_opt {
+        Some(bed_filename) => Some(GenomeRegions::from_bed(bed_filename, &header_view)),
+        None => None
+    };
+
     println!("chromosome\tposition\treference_base\tvariant_base\tcanonical_type\tcanonical_context\taligned_depth\tmean_mapq\t\
               hmajor_variant_count\thminor_variant_count\thmajor_vaf\thminor_vaf\th1_a\th1_c\th1_g\th1_t\th2_a\th2_c\th2_g\th2_t\t\
               p_ref\tp_germline\tp_somatic");
 
-    let all_positions = false;
+    let all_positions = true;
     let chromosome_name = "chr20";
     let min_variant_observations = 3;
     //let max_variant_minor_observations = 1;
@@ -119,9 +141,6 @@ fn extract_mutations(input_bam: &str, reference_genome: &str) {
 
     // set up header and faidx for pulling reference sequence
     let faidx = faidx::Reader::from_path(reference_genome).expect("Could not read reference genome:");
-
-    let header = bam::Header::from_template(bam.header());
-    let header_view = bam::HeaderView::from_header(&header);
     let tid = header_view.tid(chromosome_name.as_bytes()).unwrap();
     let chromosome_length = header_view.target_len(tid).unwrap() as usize;
     let mut chromosome_sequence = faidx.fetch_seq_string(chromosome_name, 0, chromosome_length).unwrap();
@@ -136,12 +155,24 @@ fn extract_mutations(input_bam: &str, reference_genome: &str) {
     for p in bam.pileup() {
         let pileup = p.unwrap();
         
-        //println!("processing {}", pileup.pos() + 1);
-        ps.fill_pileup(&mut cache, pileup.alignments());
-
+        // check whether we should bother with this position
+        let reference_tid = pileup.tid();
         let reference_position = pileup.pos() as usize;
+
+        // if a bed file was provided, check whether this position is contained in the provided regions
+        if let Some(ref r) = regions {
+            if !r.contains(reference_tid, reference_position) {
+                continue;
+            }
+        }
+
         let reference_base = chromosome_bytes[reference_position] as char;
         if reference_base == 'N' {
+            continue;
+        }
+
+        ps.fill_pileup(&mut cache, pileup.alignments());
+        if ps.get_depth() < min_depth {
             continue;
         }
 
@@ -166,7 +197,10 @@ fn extract_mutations(input_bam: &str, reference_genome: &str) {
         }
 
         let minor_haplotype_index = 1 - max_haplotype_index;
-        let minor_variant_count = ps.get_count_on_haplotype(max_variant_index, minor_haplotype_index);
+        let mut minor_variant_count = 0;
+        if max_variant_index != reference_base_index {
+            minor_variant_count = ps.get_count_on_haplotype(max_variant_index, minor_haplotype_index);
+        }
 
         if all_positions || (max_variant_count >= min_variant_observations /*&& minor_variant_count <= max_variant_minor_observations*/) {
 

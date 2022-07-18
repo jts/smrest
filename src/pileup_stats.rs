@@ -46,7 +46,6 @@ impl PileupStats {
         return self.get_haplotype_depth(0) + self.get_haplotype_depth(1);
     }
 
-
     pub fn get_haplotype_counts(&self, h: u32) -> [u32; 4] {
         let mut a: [u32; 4] = [0; 4];
         for bi in 0u32..4u32 {
