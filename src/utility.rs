@@ -45,6 +45,8 @@ fn get_haplotag_from_record(record: &bam::Record) -> Option<i32> {
         Ok(value) => {
             if let Aux::I32(v) = value {
                 return Some(v)
+            } else if let Aux::U8(v) = value {
+                return Some(v as i32) // whatshap encodes with U8
             } else {
                 return None
             }

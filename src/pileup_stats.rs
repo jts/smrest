@@ -96,6 +96,10 @@ impl PileupStats {
         let mut n: f32 = 0.0;
 
         for a in alignments {
+            if a.record().seq().len() == 0 {
+                continue;
+            }
+
             if let Some(qpos) = a.qpos() {
                 if let Some(mut hi) = cache.get(&a.record()) {
                     let read_base = a.record().seq()[qpos] as char;

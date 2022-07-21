@@ -66,6 +66,8 @@ def main():
     fp = 0
     fn = 0
 
+    print_calls = True
+
     for (key, values) in annotations.items():
         num_truth += "truth" in values
         num_called += "called" in values
@@ -73,6 +75,9 @@ def main():
         tp += "truth" in values and "called" in values
         fp += "truth" not in values and "called" in values
         fn += "truth" in values and "called" not in values
+
+        if print_calls:
+            print(key, values)
 
     bases_covered = len(called_positions)
     print("bases_covered\tnum_truth\tnum_called\ttp\tfp\tfn")

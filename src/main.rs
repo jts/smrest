@@ -151,7 +151,7 @@ fn extract_mutations(input_bam: &str, reference_genome: &str, min_depth: u32, re
     let mut ps = PileupStats::new();
 
     // go to chromosome of interest
-    bam.fetch(chromosome_name).unwrap();
+    bam.fetch( chromosome_name ).unwrap();
     for p in bam.pileup() {
         let pileup = p.unwrap();
         
