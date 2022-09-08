@@ -4,6 +4,7 @@
 //---------------------------------------------------------
 
 use statrs::distribution::{Binomial, Discrete, Poisson, Beta, ContinuousCDF};
+use cached::proc_macro::cached;
 
 pub struct ModelParameters {
     pub mutation_rate: f64,
@@ -104,7 +105,16 @@ pub fn calculate_class_probabilities_unphased(alt_count: u64, ref_count: u64, pa
 }
 
 // https://en.wikipedia.org/wiki/Binomial_test
+// this function is slow so we approximate it by converting
+// the p parameter to an integer so it can be memoized 
 fn binomial_test_twosided(x: u64, n: u64, p: f64) -> f64 {
+    let pi = (p * 100.0) as u64;
+    return binomial_test_twosided_memoized(x, n, pi);
+}
+
+#[cached]
+fn binomial_test_twosided_memoized(x: u64, n: u64, pi: u64) -> f64 {
+    let p = pi as f64 / 100.0;
     let bn = Binomial::new(p, n).unwrap();
     let d = bn.pmf(x);
 
@@ -123,6 +133,39 @@ mod tests {
         assert_abs_diff_eq!(binomial_test_twosided(3, 15, 0.6), 0.002398, epsilon = e);
         assert_abs_diff_eq!(binomial_test_twosided(30, 100, 0.4), 0.04154, epsilon = e);
         assert_abs_diff_eq!(binomial_test_twosided(915, 1000, 0.85), 8.244e-10, epsilon = e);
+        assert_abs_diff_eq!(binomial_test_twosided(5, 1000, 0.85), 0.0, epsilon = e);
         Ok(())
     }
 }
+
+// model from: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5832436/pdf/pcbi.1005965.pdf
+pub fn calculate_class_probabilities_sgz(alt_count: u64, ref_count: u64, params: &ModelParameters) -> [f64;3]
+{
+    let depth = ref_count + alt_count;
+    let alpha = 0.01; // from paper
+
+    let af_germline = 0.5;
+    let af_somatic = params.purity / 2.0;
+
+    let p_g = binomial_test_twosided(alt_count, depth, af_germline);
+    let p_s = binomial_test_twosided(alt_count, depth, af_somatic);
+    let f = alt_count as f64 / depth as f64;
+
+    let call_subclonal = false;
+
+    if p_s > alpha && p_g <= alpha {
+        // predicted somatic
+        return [ 0.0, 0.0, 1.0 ];
+    } else if call_subclonal && p_s <= alpha && p_g <= alpha && f < af_somatic / 1.5 {
+        // predicted subclonal somatic
+        return [ 0.0, 0.0, 1.0 ];
+    } else if p_s <= alpha && p_g > alpha {
+        // predicted germline
+        return [ 0.0, 1.0, 0.0 ];
+    } else  {
+        // predicted reference
+        // this is not strictly what they do in the paper but works in our framework
+        return [ 1.0, 0.0, 0.0 ];
+    }
+}
+
