@@ -2,6 +2,9 @@
 // Copyright 2022 Ontario Institute for Cancer Research
 // Written by Jared Simpson (jared.simpson@oicr.on.ca)
 //---------------------------------------------------------
+#[macro_use]
+extern crate approx;
+
 use rust_htslib::{bam, faidx, bam::Read};
 use rust_htslib::bcf::{Reader as BcfReader, Read as BcfRead};
 use std::collections::{HashSet, HashMap};

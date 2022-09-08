@@ -2,6 +2,7 @@
 // Copyright 2022 Ontario Institute for Cancer Research
 // Written by Jared Simpson (jared.simpson@oicr.on.ca)
 //---------------------------------------------------------
+
 use statrs::distribution::{Binomial, Discrete, Poisson, Beta, ContinuousCDF};
 
 pub struct ModelParameters {
@@ -102,3 +103,26 @@ pub fn calculate_class_probabilities_unphased(alt_count: u64, ref_count: u64, pa
     return [ p_ref_data, p_het_data, p_somatic_data ];
 }
 
+// https://en.wikipedia.org/wiki/Binomial_test
+fn binomial_test_twosided(x: u64, n: u64, p: f64) -> f64 {
+    let bn = Binomial::new(p, n).unwrap();
+    let d = bn.pmf(x);
+
+    let sum = (0..=n).map(|i| bn.pmf(i)).filter(|v| v <= &d).sum();
+    return sum;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_binomial_test() -> Result<(), String> {
+        let e = 0.00001;
+        assert_abs_diff_eq!(binomial_test_twosided(2, 15, 0.6), 0.0002789, epsilon = e);
+        assert_abs_diff_eq!(binomial_test_twosided(3, 15, 0.6), 0.002398, epsilon = e);
+        assert_abs_diff_eq!(binomial_test_twosided(30, 100, 0.4), 0.04154, epsilon = e);
+        assert_abs_diff_eq!(binomial_test_twosided(915, 1000, 0.85), 8.244e-10, epsilon = e);
+        Ok(())
+    }
+}
