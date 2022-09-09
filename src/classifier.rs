@@ -72,7 +72,7 @@ pub fn calculate_class_probabilities_unphased(alt_count: u64, ref_count: u64, pa
     // P(data | het) = Binom(alt_count, ref_count + alt_count, 1 - error_rate)
     let p_data_het = Binomial::new(0.5 * (1.0 - params.error_rate) + 0.5 * params.error_rate, depth).unwrap().pmf(alt_count);
     
-    // P(data | somatic) = sum_c Binom(alt_count, ref_count + alt_count, purity * c * (1 - error_rate) + (1 - purity*c) * error_rate ) P(c)
+    // P(data | somatic) = sum_c Binom(alt_count, ref_count + alt_count, 0.5 * purity * c * (1 - error_rate) + (1 - purity * c * 0.5) * error_rate ) P(c)
     let bins = 10;
     let step = 1.0 / 10 as f64;
     let mut p_data_somatic = 0.0;
@@ -82,7 +82,7 @@ pub fn calculate_class_probabilities_unphased(alt_count: u64, ref_count: u64, pa
         let c = (end + start) / 2.0;
         let p_c = params.ccf_dist.cdf(end) - params.ccf_dist.cdf(start);
 
-        let p_read_from_mutated_haplotype = params.purity * c;
+        let p_read_from_mutated_haplotype = params.purity * c * 0.5;
         let t1 = p_read_from_mutated_haplotype * (1.0 - params.error_rate);
         let t2 = (1.0 - p_read_from_mutated_haplotype) * params.error_rate;
 

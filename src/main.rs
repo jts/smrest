@@ -104,7 +104,7 @@ fn main() {
         let params = ModelParameters { 
             mutation_rate: 5.0 / 1000000.0, // per haplotype
             heterozygosity: 1.0 / 2000.0, // per haplotype
-            ccf_dist: Beta::new(9.0, 1.0).unwrap(),
+            ccf_dist: Beta::new(99.0, 1.0).unwrap(),
             depth_dist: Some(Poisson::new(depth_lambda).unwrap()),
             purity: purity,
             error_rate: 0.02
