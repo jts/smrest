@@ -108,10 +108,8 @@ impl SimulationStats {
     }
 }
 
-pub fn sim_pileup(params: & ModelParameters, reference_genome: &str)
+pub fn sim_pileup(params: & ModelParameters, reference_genome: &str, per_site_output: bool)
 {
-    let summary = true;
-
     let mut rng = rand::thread_rng();
 
     // get genome sequence
@@ -135,7 +133,7 @@ pub fn sim_pileup(params: & ModelParameters, reference_genome: &str)
     let mut sgz_model_stats = SimulationStats::new("sgz".to_string());
 
     // Finally, simulate some pileup data at each position on each haplotype
-    if !summary {
+    if per_site_output {
         println!("model\tposition\thaplotype\tclass\tis_het\tis_somatic\tref_count\talt_count\thvaf\tp_ref\tp_het\tp_somatic");
     }
 
@@ -202,7 +200,7 @@ pub fn sim_pileup(params: & ModelParameters, reference_genome: &str)
             phased_model_stats.update(is_het, is_somatic, &probs);
 
             // output per-record calls, if wanted
-            if !summary {
+            if per_site_output {
                 let hvaf = alt_count as f64 / ps.get_haplotype_depth(i as u32) as f64; 
                 let mut class = "REF";
                 if is_somatic { 
@@ -233,7 +231,7 @@ pub fn sim_pileup(params: & ModelParameters, reference_genome: &str)
             sgz_model_stats.update(is_het, is_somatic, &sgz_probs);
             
             // output per-record calls, if wanted
-            if !summary {
+            if per_site_output {
                 let hvaf = alt_count as f64 / ps.get_depth() as f64; 
                 let mut class = "REF";
                 if is_somatic { 
@@ -253,7 +251,7 @@ pub fn sim_pileup(params: & ModelParameters, reference_genome: &str)
         }
     }
 
-    if summary {
+    if ! per_site_output {
         println!("model\tpurity\tmean_coverage\tmean_ccf\ttrue_somatic_positions\ttrue_het_position\testimated_ref_bases\t\
                   estimated_het_bases\testimated_mutated_bases\tnum_somatic_calls\tsomatic_call_sensitivity\tsomatic_call_precision\tf1");
         phased_model_stats.print(& params);

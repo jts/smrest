@@ -45,7 +45,12 @@ fn main() {
                     .short('g')
                     .long("genome")
                     .takes_value(true)
-                    .help("the reference genome")))
+                    .help("the reference genome"))
+                .arg(Arg::with_name("per-site-output")
+                    .short('p')
+                    .long("per-site-output")
+                    .takes_value(false)
+                    .help("change the output style to write one line per simulated site")))
         .subcommand(SubCommand::with_name("extract")
                 .about("gather candidate somatic mutations from aligned reads")
                 .arg(Arg::with_name("genome")
@@ -100,7 +105,7 @@ fn main() {
 
         let depth_lambda = value_t!(matches, "depth", f64).unwrap_or(50.0);
         let purity = value_t!(matches, "purity", f64).unwrap_or(0.75);
-
+        let per_site_output = matches.is_present("per-site-output");
         let params = ModelParameters { 
             mutation_rate: 5.0 / 1000000.0, // per haplotype
             heterozygosity: 1.0 / 2000.0, // per haplotype
@@ -109,7 +114,7 @@ fn main() {
             purity: purity,
             error_rate: 0.02
         };
-        sim_pileup(& params, matches.value_of("genome").unwrap());
+        sim_pileup(&params, matches.value_of("genome").unwrap(), per_site_output);
     }
 }
 
