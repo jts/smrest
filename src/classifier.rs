@@ -50,6 +50,12 @@ pub fn calculate_class_probabilities_phased(alt_count: u64, ref_count: u64, para
     let p_somatic = params.mutation_rate;
     let p_ref = 1.0 - p_het - p_somatic;
 
+    /* flat prior
+    let p_het = 1.0 / 3.0;
+    let p_somatic = p_het;
+    let p_ref = p_het;
+    */
+
     let sum = p_data_ref * p_ref + p_data_het * p_het + p_data_somatic * p_somatic;
     
     let p_ref_data = p_data_ref * p_ref / sum;
@@ -94,7 +100,12 @@ pub fn calculate_class_probabilities_unphased(alt_count: u64, ref_count: u64, pa
     let p_het = params.heterozygosity;
     let p_somatic = params.mutation_rate;
     let p_ref = 1.0 - p_het - p_somatic;
-
+    
+    /*
+    let p_het = 1.0 / 3.0;
+    let p_somatic = p_het;
+    let p_ref = p_het;
+    */
     let sum = p_data_ref * p_ref + p_data_het * p_het + p_data_somatic * p_somatic;
     
     let p_ref_data = p_data_ref * p_ref / sum;
