@@ -46,8 +46,22 @@ fn main() {
                     .long("genome")
                     .takes_value(true)
                     .help("the reference genome"))
-                .arg(Arg::with_name("per-site-output")
+                .arg(Arg::with_name("error-rate")
+                    .short('e')
+                    .long("error-rate")
+                    .takes_value(true)
+                    .help("the error rate of simulated reads"))
+                .arg(Arg::with_name("tmb")
+                    .short('t')
+                    .long("tmb")
+                    .takes_value(true)
+                    .help("the tumour mutation burden, in mutations per megabase"))
+                .arg(Arg::with_name("proportion-clonal")
                     .short('p')
+                    .long("proportion-clonal")
+                    .takes_value(true)
+                    .help("the proportion of simulated mutations that are fully clonal (ccf = 1.0)"))
+                .arg(Arg::with_name("per-site-output")
                     .long("per-site-output")
                     .takes_value(false)
                     .help("change the output style to write one line per simulated site")))
@@ -102,17 +116,21 @@ fn main() {
                        matches.value_of("genome").unwrap(),
                        matches.value_of("vcf").unwrap());
     } else if let Some(matches) = matches.subcommand_matches("sim-pileup") {
-
         let depth_lambda = value_t!(matches, "depth", f64).unwrap_or(50.0);
         let purity = value_t!(matches, "purity", f64).unwrap_or(0.75);
+        let error_rate = value_t!(matches, "error-rate", f64).unwrap_or(0.02);
+        let muts_per_megabase = value_t!(matches, "tmb", f64).unwrap_or(5.0);
         let per_site_output = matches.is_present("per-site-output");
+        let p_clonal = value_t!(matches, "proportion-clonal", f64).unwrap_or(0.9);
+        let ccf = CancerCellFraction { p_clonal: p_clonal, subclonal_ccf: Beta::new(2.0, 2.0).unwrap() };
+
         let params = ModelParameters { 
-            mutation_rate: 5.0 / 1000000.0, // per haplotype
+            mutation_rate: muts_per_megabase / 1000000.0, // per haplotype
             heterozygosity: 1.0 / 2000.0, // per haplotype
-            ccf_dist: Beta::new(99.0, 1.0).unwrap(),
+            ccf_dist: ccf,
             depth_dist: Some(Poisson::new(depth_lambda).unwrap()),
             purity: purity,
-            error_rate: 0.02
+            error_rate: error_rate
         };
         sim_pileup(&params, matches.value_of("genome").unwrap(), per_site_output);
     }
@@ -120,10 +138,11 @@ fn main() {
 
 fn extract_mutations(input_bam: &str, reference_genome: &str, min_depth: u32, region_opt: Option<&str>) {
 
+    let ccf = CancerCellFraction { p_clonal: 0.75, subclonal_ccf: Beta::new(2.0, 2.0).unwrap() };
     let params = ModelParameters { 
         mutation_rate: 5.0 / 1000000.0, // per haplotype
         heterozygosity: 1.0 / 2000.0, // per haplotype
-        ccf_dist: Beta::new(9.0, 1.0).unwrap(),
+        ccf_dist: ccf,
         depth_dist: None,
         purity: 0.75,
         error_rate: 0.05 // R9.4 conservative

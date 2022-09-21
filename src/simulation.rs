@@ -98,10 +98,10 @@ impl SimulationStats {
         let sens = self.num_somatic_correct as f64 / self.num_somatic_true as f64;
         let prec = self.num_somatic_correct as f64 / self.num_somatic_calls as f64;
         let f1 = 2.0 * sens * prec / (sens + prec);
-        let ccf_mean = params.ccf_dist.shape_a() / (params.ccf_dist.shape_a() + params.ccf_dist.shape_b());
+        let subclonal_ccf_mean = params.ccf_dist.subclonal_mean_ccf();
 
-        println!("{}\t{:.3}\t{:.3}\t{:.3}\t{}\t{}\t{:.1}\t{:.1}\t{:.1}\t{}\t{:.3}\t{:.3}\t{:.3}",
-            self.model_name, params.purity, params.depth_dist.unwrap().lambda(), ccf_mean,
+        println!("{}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{}\t{}\t{:.1}\t{:.1}\t{:.1}\t{}\t{:.3}\t{:.3}\t{:.3}",
+            self.model_name, params.purity, params.depth_dist.unwrap().lambda(), params.ccf_dist.p_clonal, subclonal_ccf_mean,
             self.num_somatic_true, self.num_het_true, 
             self.class_posterior_sums[0], self.class_posterior_sums[1], self.class_posterior_sums[2],
             self.num_somatic_calls, sens, prec, f1);
@@ -252,7 +252,7 @@ pub fn sim_pileup(params: & ModelParameters, reference_genome: &str, per_site_ou
     }
 
     if ! per_site_output {
-        println!("model\tpurity\tmean_coverage\tmean_ccf\ttrue_somatic_positions\ttrue_het_position\testimated_ref_bases\t\
+        println!("model\tpurity\tmean_coverage\tproportion_clonal\tsubclonal_mean_ccf\ttrue_somatic_positions\ttrue_het_position\testimated_ref_bases\t\
                   estimated_het_bases\testimated_mutated_bases\tnum_somatic_calls\tsomatic_call_sensitivity\tsomatic_call_precision\tf1");
         phased_model_stats.print(& params);
         unphased_model_stats.print(& params);
