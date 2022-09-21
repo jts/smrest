@@ -4,6 +4,8 @@
 //---------------------------------------------------------
 use rust_htslib::{faidx};
 use statrs::distribution::{Binomial};
+use std::fs::File;
+use std::io::Write;
 use rand::prelude::*;
 use crate::ModelParameters;
 use crate::PileupStats;
@@ -39,6 +41,26 @@ fn mutate_haplotypes(haplotypes: &mut [ Vec<u8> ], rate: f64) -> () {
     }
 }
 
+pub struct MutationOutput
+{
+    out: File
+}
+
+impl MutationOutput {
+    pub fn new(output_filename: &str) -> MutationOutput {
+        let mut r = MutationOutput {
+            out: File::create(output_filename).unwrap()
+        };
+        r.out.write(b"chromosome\tposition\thaplotype\tref_base\talt_base\thvaf\n").expect("Unable to write");
+        return r;
+    }
+
+    pub fn write(& mut self, chr: &String, position: usize, haplotype: usize, ref_base: char, alt_base: char, hvaf: f64) -> () {
+        let s = format!("{}\t{}\t{}\t{}\t{}\t{:.4}\n", chr, position, haplotype, ref_base, alt_base, hvaf);
+        self.out.write(s.as_bytes()).expect("Unable to write");
+    }
+}
+
 pub struct SimulationStats
 {
     model_name: String,
@@ -47,7 +69,6 @@ pub struct SimulationStats
     num_somatic_true: usize,
     num_somatic_correct: usize,
     num_het_true: usize
-
 }
 
 impl SimulationStats {
@@ -108,14 +129,14 @@ impl SimulationStats {
     }
 }
 
-pub fn sim_pileup(params: & ModelParameters, reference_genome: &str, per_site_output: bool)
+pub fn sim_pileup(params: &ModelParameters, reference_genome: &str, per_site_output: bool)
 {
     let mut rng = rand::thread_rng();
 
     // get genome sequence
     let chromosome_name = String::from("chr20");
     //let chromosome_length = 60000000;
-    let chromosome_length = 6000000;
+    let chromosome_length = 10000000;
 
     let faidx = faidx::Reader::from_path(reference_genome).expect("Could not read reference genome:");
     let mut chromosome_sequence = faidx.fetch_seq_string(chromosome_name.as_str(), 0, chromosome_length).unwrap();
@@ -131,6 +152,8 @@ pub fn sim_pileup(params: & ModelParameters, reference_genome: &str, per_site_ou
     let mut phased_model_stats = SimulationStats::new("phased".to_string());
     let mut unphased_model_stats = SimulationStats::new("unphased".to_string());
     let mut sgz_model_stats = SimulationStats::new("sgz".to_string());
+
+    let mut mutation_out = MutationOutput::new("test_mutation_output.tsv");
 
     // Finally, simulate some pileup data at each position on each haplotype
     if per_site_output {
@@ -157,6 +180,10 @@ pub fn sim_pileup(params: & ModelParameters, reference_genome: &str, per_site_ou
                 true => params.ccf_dist.sample(&mut rng),
                 false => 0.0
             };
+
+            if is_somatic {
+                mutation_out.write(&chromosome_name, j, i+1, chromosome_bytes[j] as char , somatic_haplotypes[i][j] as char, ccf * params.purity);
+            }
 
             // simulate each read
             for _r in 0..haplotype_depths[i] {

@@ -105,7 +105,7 @@ fn main() {
     
     if let Some(matches) = matches.subcommand_matches("extract") {
         
-        let min_depth = value_t!(matches, "min-depth", u32).unwrap_or(30);
+        let min_depth = value_t!(matches, "min-depth", u32).unwrap_or(20);
         extract_mutations(matches.value_of("input-bam").unwrap(),
                           matches.value_of("genome").unwrap(),
                           min_depth,
@@ -145,7 +145,7 @@ fn extract_mutations(input_bam: &str, reference_genome: &str, min_depth: u32, re
         ccf_dist: ccf,
         depth_dist: None,
         purity: 0.75,
-        error_rate: 0.05 // R9.4 conservative
+        error_rate: 0.05
     };
 
     let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
