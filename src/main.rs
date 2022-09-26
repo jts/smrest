@@ -11,6 +11,10 @@ use std::collections::{HashSet, HashMap};
 use clap::{App, SubCommand, Arg, value_t};
 use itertools::Itertools;
 use statrs::distribution::{Beta, Poisson};
+use bio::stats::probs::{LogProb, Prob, PHREDProb};
+use std::fs::File;
+use std::path::Path;
+use std::io::Write;
 
 mod pileup_stats;
 use crate::pileup_stats::PileupStats;
@@ -25,6 +29,17 @@ use crate::classifier::*;
 mod utility;
 use crate::utility::ReadHaplotypeCache;
 use crate::utility::GenomeRegions;
+
+use longshot::call_potential_snvs::call_potential_snvs;
+use longshot::estimate_alignment_parameters::estimate_alignment_parameters;
+use longshot::genotype_probs::GenotypePriors;
+use longshot::util::{parse_region_string, DensityParameters};
+use longshot::print_output::print_variant_debug;
+use longshot::variants_and_fragments::parse_vcf_potential_variants;
+use longshot::extract_fragments::{extract_fragments, ExtractFragmentParameters};
+use longshot::realignment::AlignmentType;
+use longshot::util::u8_to_string;
+use longshot::haplotype_assembly::generate_flist_buffer;
 
 fn main() {
     let matches = App::new("smrest")
@@ -86,6 +101,22 @@ fn main() {
                     .required(true)
                     .index(1)
                     .help("the input bam file to process")))
+        .subcommand(SubCommand::with_name("call")
+                .about("call somatic mutations")
+                .arg(Arg::with_name("genome")
+                    .short('g')
+                    .long("genome")
+                    .takes_value(true)
+                    .help("the reference genome"))
+                .arg(Arg::with_name("regions")
+                    .short('r')
+                    .long("regions")
+                    .takes_value(true)
+                    .help("only call within these regions"))
+                .arg(Arg::with_name("input-bam")
+                    .required(true)
+                    .index(1)
+                    .help("the input bam file to process")))
         .subcommand(SubCommand::with_name("error-contexts")
                 .about("gather error rate statistics per sequence context")
                 .arg(Arg::with_name("vcf")
@@ -110,7 +141,10 @@ fn main() {
                           matches.value_of("genome").unwrap(),
                           min_depth,
                           matches.value_of("regions"));
-
+    } else if let Some(matches) = matches.subcommand_matches("call") {
+        call_mutations(matches.value_of("input-bam").unwrap(),
+                       matches.value_of("genome").unwrap(),
+                       matches.value_of("regions"));
     } else if let Some(matches) = matches.subcommand_matches("error-contexts") {
         error_contexts(matches.value_of("input-bam").unwrap(),
                        matches.value_of("genome").unwrap(),
@@ -147,7 +181,7 @@ fn extract_mutations(input_bam: &str, reference_genome: &str, min_depth: u32, re
         purity: 0.75,
         error_rate: 0.05
     };
-
+        
     let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
     let header = bam::Header::from_template(bam.header());
     let header_view = bam::HeaderView::from_header(&header);
@@ -270,6 +304,138 @@ fn extract_mutations(input_bam: &str, reference_genome: &str, min_depth: u32, re
                       h1[0], h1[1], h1[2], h1[3],
                       class_probs[0], class_probs[1], class_probs[2]);
         }
+    }
+}
+
+fn call_mutations(input_bam: &str, reference_genome: &str, region_opt: Option<&str>) {
+
+    let ccf = CancerCellFraction { p_clonal: 0.75, subclonal_ccf: Beta::new(2.0, 2.0).unwrap() };
+    let params = ModelParameters { 
+        mutation_rate: 5.0 / 1000000.0, // per haplotype
+        heterozygosity: 1.0 / 2000.0, // per haplotype
+        ccf_dist: ccf,
+        depth_dist: None,
+        purity: 0.75,
+        error_rate: 0.05
+    };
+
+    let hom_snv_rate = LogProb::from(Prob(0.0005));
+    let het_snv_rate = LogProb::from(Prob(0.001));
+    let hom_indel_rate = LogProb::from(Prob(0.00005));
+    let het_indel_rate = LogProb::from(Prob(0.00001));
+    let ts_tv_ratio = 2.0 * 0.5; // from longshot defaults...
+
+    let genotype_priors = GenotypePriors::new(
+        hom_snv_rate,
+        het_snv_rate,
+        hom_indel_rate,
+        het_indel_rate,
+        ts_tv_ratio,
+    ).unwrap();
+    
+    let min_mapq = 50;
+    let max_cigar_indel = 20;
+
+    let alignment_parameters = estimate_alignment_parameters(&input_bam.to_owned(), &reference_genome.to_owned(), &None, 60, max_cigar_indel, 100000).unwrap();
+
+    eprintln!("Calling potential SNVs using pileup...");
+    let interval = parse_region_string(Some("chr20:400507-400597"), &input_bam.to_owned()).unwrap();
+
+    let variant_debug_directory = Some("debug_variants".to_owned());
+    let maxcov = 100;
+    let min_allele_qual = 7.0;
+    let max_p_miscall: f64 = *Prob::from(PHREDProb(min_allele_qual));
+
+    let potential_variants_file: Option<&str> = Some("candidates2.vcf");
+    let mut varlist = match potential_variants_file {
+        Some(file) => {
+            eprintln!("Reading potential variants from input VCF...");
+            parse_vcf_potential_variants(&file.to_string(), &input_bam.to_owned()).unwrap()
+        }
+        None => {
+            eprintln!("Calling potential SNVs using pileup...");
+            call_potential_snvs(
+                &input_bam.to_owned(),
+                &reference_genome.to_owned(),
+                &interval,
+                &genotype_priors,
+                10,
+                maxcov,
+                5,
+                0.1,
+                min_mapq,
+                alignment_parameters.ln(),
+                LogProb::from(PHREDProb(20.0)),
+            ).unwrap()
+        }
+    };
+
+    // for printing
+    let density_params = DensityParameters {
+        n: 10,
+        len: 500,
+        gq: 50 as f64,
+    };
+
+    println!("Found {} candidates", varlist.len());
+    print_variant_debug(
+        &mut varlist,
+        &interval,
+        &variant_debug_directory,
+        &"1.0.potential_SNVs.vcf",
+        maxcov,
+        &density_params,
+        &"test".to_owned(),
+    );
+
+    eprintln!( "Generating haplotype fragments from reads...");
+    let extract_fragment_parameters = ExtractFragmentParameters {
+        min_mapq: min_mapq,
+        alignment_type: AlignmentType::ForwardAlgorithmNonNumericallyStable,
+        band_width: 20,
+        anchor_length: 6,
+        variant_cluster_max_size: 3,
+        max_window_padding: 50,
+        max_cigar_indel: max_cigar_indel as usize,
+        store_read_id: true
+    };
+
+    let mut flist = extract_fragments(
+        &input_bam.to_owned(),
+        &reference_genome.to_owned(),
+        &mut varlist,
+        &interval,
+        extract_fragment_parameters,
+        alignment_parameters,
+    ).unwrap();
+
+    // if we're printing out variant "debug" information, print out a fragment file to that debug directory
+    match &variant_debug_directory {
+        &Some(ref debug_dir) => {
+            let ffn = match Path::new(&debug_dir).join(&"fragments.txt").to_str() {
+                Some(s) => s.to_owned(),
+                None => {
+                    panic!("Invalid unicode provided for variant debug directory");
+                }
+            };
+            // normally phase_variant is used to select which variants are heterozygous, so that
+            // we only pass to HapCUT2 heterozygous variants
+            // in this case, we set them all to 1 so we generate fragments for all variants
+            let phase_variant: Vec<bool> = vec![true; varlist.lst.len()];
+            // generate_flist_buffer generates a Vec<Vec<u8>> where each inner vector is a file line
+            // together the lines represent the contents of a fragment file in HapCUT-like format
+            let fragment_buffer =
+                generate_flist_buffer(&flist, &phase_variant, max_p_miscall, true).unwrap();
+
+            // convert the buffer of u8s into strings and print them to the fragment file
+            let fragment_file_path = Path::new(&ffn);
+            let mut fragment_file = File::create(&fragment_file_path).unwrap();
+            for mut line_u8 in fragment_buffer {
+                line_u8.pop();
+                writeln!(fragment_file, "{}", u8_to_string(&line_u8).unwrap());
+            }
+        }
+        &None => {}
     }
 }
 

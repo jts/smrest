@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 rust-htslib = "*"
 clap = "*"
-bio = "*"
+bio = "0.25.0"
 itertools = "*"
 rand = "0.8.5"
 statrs = "0.15.0"
@@ -16,3 +16,4 @@ intervaltree = "*"
 csv = "*"
 approx = "*"
 cached = "*"
+longshot = { path = "../longshot" }
