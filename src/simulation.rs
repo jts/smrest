@@ -182,7 +182,7 @@ pub fn sim_pileup(params: &ModelParameters, reference_genome: &str, per_site_out
             };
 
             if is_somatic {
-                mutation_out.write(&chromosome_name, j, i+1, chromosome_bytes[j] as char , somatic_haplotypes[i][j] as char, ccf * params.purity);
+                mutation_out.write(&chromosome_name, j + 1, i+1, chromosome_bytes[j] as char , somatic_haplotypes[i][j] as char, ccf * params.purity);
             }
 
             // simulate each read

@@ -5,7 +5,7 @@
 #[macro_use]
 extern crate approx;
 
-use rust_htslib::{bam, faidx, bam::Read};
+use rust_htslib::{bam, faidx, bam::Read, bam::record::CigarStringView};
 use rust_htslib::bcf::{Reader as BcfReader, Read as BcfRead};
 use std::collections::{HashSet, HashMap};
 use clap::{App, SubCommand, Arg, value_t};
@@ -30,16 +30,13 @@ mod utility;
 use crate::utility::ReadHaplotypeCache;
 use crate::utility::GenomeRegions;
 
-use longshot::call_potential_snvs::call_potential_snvs;
-use longshot::estimate_alignment_parameters::estimate_alignment_parameters;
-use longshot::genotype_probs::GenotypePriors;
-use longshot::util::{parse_region_string, DensityParameters};
-use longshot::print_output::print_variant_debug;
-use longshot::variants_and_fragments::parse_vcf_potential_variants;
-use longshot::extract_fragments::{extract_fragments, ExtractFragmentParameters};
+mod longshot_realign;
+use longshot_realign::recalculate_pileup;
+
+use longshot::util::{u8_to_string, dna_vec, parse_region_string, parse_target_names, DensityParameters};
 use longshot::realignment::AlignmentType;
-use longshot::util::u8_to_string;
-use longshot::haplotype_assembly::generate_flist_buffer;
+use longshot::extract_fragments::{extract_fragment, extract_fragments, create_augmented_cigarlist, CigarPos, ExtractFragmentParameters};
+use longshot::estimate_alignment_parameters::estimate_alignment_parameters;
 
 fn main() {
     let matches = App::new("smrest")
@@ -307,6 +304,7 @@ fn extract_mutations(input_bam: &str, reference_genome: &str, min_depth: u32, re
     }
 }
 
+
 fn call_mutations(input_bam: &str, reference_genome: &str, region_opt: Option<&str>) {
 
     let ccf = CancerCellFraction { p_clonal: 0.75, subclonal_ccf: Beta::new(2.0, 2.0).unwrap() };
@@ -319,6 +317,7 @@ fn call_mutations(input_bam: &str, reference_genome: &str, region_opt: Option<&s
         error_rate: 0.05
     };
 
+    /*
     let hom_snv_rate = LogProb::from(Prob(0.0005));
     let het_snv_rate = LogProb::from(Prob(0.001));
     let hom_indel_rate = LogProb::from(Prob(0.00005));
@@ -332,63 +331,17 @@ fn call_mutations(input_bam: &str, reference_genome: &str, region_opt: Option<&s
         het_indel_rate,
         ts_tv_ratio,
     ).unwrap();
-    
+    */
+
+    let bases = "ACGT";
     let min_mapq = 50;
     let max_cigar_indel = 20;
-
-    let alignment_parameters = estimate_alignment_parameters(&input_bam.to_owned(), &reference_genome.to_owned(), &None, 60, max_cigar_indel, 100000).unwrap();
-
-    eprintln!("Calling potential SNVs using pileup...");
-    let interval = parse_region_string(Some("chr20:400507-400597"), &input_bam.to_owned()).unwrap();
-
-    let variant_debug_directory = Some("debug_variants".to_owned());
-    let maxcov = 100;
-    let min_allele_qual = 7.0;
-    let max_p_miscall: f64 = *Prob::from(PHREDProb(min_allele_qual));
-
-    let potential_variants_file: Option<&str> = Some("candidates2.vcf");
-    let mut varlist = match potential_variants_file {
-        Some(file) => {
-            eprintln!("Reading potential variants from input VCF...");
-            parse_vcf_potential_variants(&file.to_string(), &input_bam.to_owned()).unwrap()
-        }
-        None => {
-            eprintln!("Calling potential SNVs using pileup...");
-            call_potential_snvs(
-                &input_bam.to_owned(),
-                &reference_genome.to_owned(),
-                &interval,
-                &genotype_priors,
-                10,
-                maxcov,
-                5,
-                0.1,
-                min_mapq,
-                alignment_parameters.ln(),
-                LogProb::from(PHREDProb(20.0)),
-            ).unwrap()
-        }
-    };
-
-    // for printing
-    let density_params = DensityParameters {
-        n: 10,
-        len: 500,
-        gq: 50 as f64,
-    };
-
-    println!("Found {} candidates", varlist.len());
-    print_variant_debug(
-        &mut varlist,
-        &interval,
-        &variant_debug_directory,
-        &"1.0.potential_SNVs.vcf",
-        maxcov,
-        &density_params,
-        &"test".to_owned(),
-    );
-
-    eprintln!( "Generating haplotype fragments from reads...");
+    let chromosome_name = "chr20";
+    let min_variant_observations = 3;
+    //let max_variant_minor_observations = 1;
+    let min_variant_observations_per_strand = 1;
+    let t_names = parse_target_names(&input_bam.to_owned()).unwrap();
+    
     let extract_fragment_parameters = ExtractFragmentParameters {
         min_mapq: min_mapq,
         alignment_type: AlignmentType::ForwardAlgorithmNonNumericallyStable,
@@ -400,42 +353,111 @@ fn call_mutations(input_bam: &str, reference_genome: &str, region_opt: Option<&s
         store_read_id: true
     };
 
-    let mut flist = extract_fragments(
-        &input_bam.to_owned(),
-        &reference_genome.to_owned(),
-        &mut varlist,
-        &interval,
-        extract_fragment_parameters,
-        alignment_parameters,
-    ).unwrap();
+    let alignment_parameters = estimate_alignment_parameters(&input_bam.to_owned(), &reference_genome.to_owned(), &None, 60, max_cigar_indel, 100000).unwrap();
+    
+    let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
+    let header = bam::Header::from_template(bam.header());
+    let header_view = bam::HeaderView::from_header(&header);
+    
+    // set up header and faidx for pulling reference sequence
+    let faidx = faidx::Reader::from_path(reference_genome).expect("Could not read reference genome:");
+    let tid = header_view.tid(chromosome_name.as_bytes()).unwrap();
+    let chromosome_length = header_view.target_len(tid).unwrap() as usize;
+    let mut chromosome_sequence = faidx.fetch_seq_string(chromosome_name, 0, chromosome_length).unwrap();
+    chromosome_sequence.make_ascii_uppercase();
+    let chromosome_bytes = chromosome_sequence.as_bytes();
+    let chromosome_char_vec = dna_vec(chromosome_bytes);
+    
+    let mut cache = ReadHaplotypeCache { cache: HashMap::new() };
+    let mut ps = PileupStats::new();
 
-    // if we're printing out variant "debug" information, print out a fragment file to that debug directory
-    match &variant_debug_directory {
-        &Some(ref debug_dir) => {
-            let ffn = match Path::new(&debug_dir).join(&"fragments.txt").to_str() {
-                Some(s) => s.to_owned(),
-                None => {
-                    panic!("Invalid unicode provided for variant debug directory");
-                }
-            };
-            // normally phase_variant is used to select which variants are heterozygous, so that
-            // we only pass to HapCUT2 heterozygous variants
-            // in this case, we set them all to 1 so we generate fragments for all variants
-            let phase_variant: Vec<bool> = vec![true; varlist.lst.len()];
-            // generate_flist_buffer generates a Vec<Vec<u8>> where each inner vector is a file line
-            // together the lines represent the contents of a fragment file in HapCUT-like format
-            let fragment_buffer =
-                generate_flist_buffer(&flist, &phase_variant, max_p_miscall, true).unwrap();
-
-            // convert the buffer of u8s into strings and print them to the fragment file
-            let fragment_file_path = Path::new(&ffn);
-            let mut fragment_file = File::create(&fragment_file_path).unwrap();
-            for mut line_u8 in fragment_buffer {
-                line_u8.pop();
-                writeln!(fragment_file, "{}", u8_to_string(&line_u8).unwrap());
-            }
+    // go to chromosome of interest
+    //let debug_position = 400546;
+    //bam.fetch( ("chr20", debug_position as i64, (debug_position + 1) as i64) );
+    
+    bam.fetch( chromosome_name );
+    for p in bam.pileup() {
+        let pileup = p.unwrap();
+        
+        // check whether we should bother with this position
+        let reference_tid = pileup.tid();
+        let reference_position = pileup.pos() as usize;
+        
+        /*
+        if reference_position != debug_position { 
+            continue;
         }
-        &None => {}
+        */
+
+        let reference_base = chromosome_bytes[reference_position] as char;
+        if reference_base == 'N' {
+            continue;
+        }
+
+        // Naive pileup
+        ps.fill_pileup(&mut cache, pileup.alignments());
+        
+        // Calculate most frequently observed non-reference base on either haplotype
+        let reference_base_index = base2index(reference_base) as u32;
+        let (candidate_haplotype_index, candidate_variant_index) = ps.select_candidate_alt(reference_base_index, min_variant_observations_per_strand);
+        let non_candidate_haplotype_index = 1 - candidate_haplotype_index;
+
+        let mut alt_count_on_candidate_haplotype = ps.get_count_on_haplotype(candidate_variant_index, candidate_haplotype_index);
+        let variant_base = bases.as_bytes()[candidate_variant_index as usize] as char;
+        
+        // determine whether to re-align reads around this locus
+        let min_obs_for_realign = 3;
+        if alt_count_on_candidate_haplotype >= min_obs_for_realign && 
+            ps.get_haplotype_depth(candidate_haplotype_index) - alt_count_on_candidate_haplotype >= min_obs_for_realign {
+            ps = recalculate_pileup(&ps, 
+                                    reference_tid,
+                                    reference_position,
+                                    &chromosome_char_vec, 
+                                    &t_names,
+                                    reference_base, 
+                                    variant_base, 
+                                    &mut cache, 
+                                    pileup.alignments(), 
+                                    extract_fragment_parameters,
+                                    alignment_parameters);
+            alt_count_on_candidate_haplotype = ps.get_count_on_haplotype(candidate_variant_index, candidate_haplotype_index);
+        }
+
+
+        let mut alt_count_on_non_candidate_haplotype = 0;
+        if candidate_variant_index != reference_base_index {
+            alt_count_on_non_candidate_haplotype = ps.get_count_on_haplotype(candidate_variant_index, non_candidate_haplotype_index);
+        }
+
+        let position = pileup.pos() + 1; // to match vcf
+        
+        /*
+        let h0 = ps.get_haplotype_counts(candidate_haplotype_index);
+        let h1 = ps.get_haplotype_counts(non_candidate_haplotype_index);
+        println!("pileup\t{chromosome_name}\t{position}\t{reference_base}\t{variant_base}\t-\t\
+                  \t-\t-\t{alt_count_on_candidate_haplotype}\t{alt_count_on_non_candidate_haplotype}\t\
+                  -\t-\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}",
+                  h0[0], h0[1], h0[2], h0[3],
+                  h1[0], h1[1], h1[2], h1[3],
+                  0.0, 0.0, 0.0);
+        */
+            
+        if candidate_variant_index != reference_base_index {
+            alt_count_on_non_candidate_haplotype = ps.get_count_on_haplotype(candidate_variant_index, non_candidate_haplotype_index);
+        }
+
+        let ref_count_on_candidate_haplotype = ps.get_count_on_haplotype(reference_base_index, candidate_haplotype_index);
+        let class_probs = calculate_class_probabilities_phased(alt_count_on_candidate_haplotype as u64, ref_count_on_candidate_haplotype as u64, &params);
+        let h0 = ps.get_haplotype_counts(candidate_haplotype_index);
+        let h1 = ps.get_haplotype_counts(non_candidate_haplotype_index);
+        if reference_base != variant_base && alt_count_on_candidate_haplotype >= min_variant_observations {
+            println!("{chromosome_name}\t{position}\t{reference_base}\t{variant_base}\t-\t\
+                      -\t-\t-\t{alt_count_on_candidate_haplotype}\t{alt_count_on_non_candidate_haplotype}\t\
+                      -\t-\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}",
+                      h0[0], h0[1], h0[2], h0[3],
+                      h1[0], h1[1], h1[2], h1[3],
+                      class_probs[0], class_probs[1], class_probs[2]);
+        }
     }
 }
 
