@@ -8,7 +8,8 @@ pub struct PileupStats
 {
     // this is indexed by base (dim four), haplotype (two), strand (two)
     base_counts: [u32; 16],
-    pub mean_mapq: f32
+    pub mean_mapq: f32,
+    pub proportion_phased: f32
 }
 
 impl PileupStats {
@@ -102,7 +103,7 @@ impl PileupStats {
     }
 
     pub fn new() -> PileupStats {
-        let ps = PileupStats { base_counts: [0; 16], mean_mapq: 0.0 };
+        let ps = PileupStats { base_counts: [0; 16], mean_mapq: 0.0, proportion_phased: 0.0 };
         return ps;
     }
 
@@ -114,12 +115,14 @@ impl PileupStats {
     pub fn fill_pileup(& mut self, cache: &mut ReadHaplotypeCache, alignments: rust_htslib::bam::pileup::Alignments<'_>) -> () {
         self.clear();
         let mut sum_mapq: f32 = 0.0;
-        let mut n: f32 = 0.0;
+        let mut phased_reads: f32 = 0.0;
+        let mut total_reads: f32 = 0.0;
 
         for a in alignments {
             if a.record().seq().len() == 0 {
                 continue;
             }
+            total_reads += 1.0;
 
             if let Some(qpos) = a.qpos() {
                 if let Some(mut hi) = cache.get(&a.record()) {
@@ -129,12 +132,13 @@ impl PileupStats {
                     let si = a.record().is_reverse() as u32;
                     self.increment(bi, hi as u32, si);
                     sum_mapq += a.record().mapq() as f32;
-                    n += 1.0;
+                    phased_reads += 1.0;
                     //println!("\t{read_base}\t{bi}\t{hi}\t{si}\t{}", *ps.get(bi, hi as u32, si));
                 }
             }
         }
-        self.mean_mapq = sum_mapq / n;
+        self.mean_mapq = sum_mapq / phased_reads;
+        self.proportion_phased = phased_reads / total_reads;
     }
 }
 

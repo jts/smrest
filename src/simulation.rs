@@ -129,7 +129,7 @@ impl SimulationStats {
     }
 }
 
-pub fn sim_pileup(params: &ModelParameters, reference_genome: &str, per_site_output: bool)
+pub fn sim_pileup(params: &ModelParameters, reference_genome: &str, per_site_output: bool, mutation_output_filename: &str)
 {
     let mut rng = rand::thread_rng();
 
@@ -153,7 +153,7 @@ pub fn sim_pileup(params: &ModelParameters, reference_genome: &str, per_site_out
     let mut unphased_model_stats = SimulationStats::new("unphased".to_string());
     let mut sgz_model_stats = SimulationStats::new("sgz".to_string());
 
-    let mut mutation_out = MutationOutput::new("test_mutation_output.tsv");
+    let mut mutation_out = MutationOutput::new(mutation_output_filename);
 
     // Finally, simulate some pileup data at each position on each haplotype
     if per_site_output {

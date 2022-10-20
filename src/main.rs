@@ -2,19 +2,14 @@
 // Copyright 2022 Ontario Institute for Cancer Research
 // Written by Jared Simpson (jared.simpson@oicr.on.ca)
 //---------------------------------------------------------
-#[macro_use]
 extern crate approx;
 
-use rust_htslib::{bam, faidx, bam::Read, bam::record::CigarStringView};
+use rust_htslib::{bam, faidx, bam::Read};
 use rust_htslib::bcf::{Reader as BcfReader, Read as BcfRead};
 use std::collections::{HashSet, HashMap};
 use clap::{App, SubCommand, Arg, value_t};
 use itertools::Itertools;
 use statrs::distribution::{Beta, Poisson};
-use bio::stats::probs::{LogProb, Prob, PHREDProb};
-use std::fs::File;
-use std::path::Path;
-use std::io::Write;
 
 mod pileup_stats;
 use crate::pileup_stats::PileupStats;
@@ -33,9 +28,9 @@ use crate::utility::GenomeRegions;
 mod longshot_realign;
 use longshot_realign::recalculate_pileup;
 
-use longshot::util::{u8_to_string, dna_vec, parse_region_string, parse_target_names, DensityParameters};
+use longshot::util::{dna_vec, parse_target_names};
 use longshot::realignment::AlignmentType;
-use longshot::extract_fragments::{extract_fragment, extract_fragments, create_augmented_cigarlist, CigarPos, ExtractFragmentParameters};
+use longshot::extract_fragments::{ExtractFragmentParameters};
 use longshot::estimate_alignment_parameters::estimate_alignment_parameters;
 
 fn main() {
@@ -73,6 +68,11 @@ fn main() {
                     .long("proportion-clonal")
                     .takes_value(true)
                     .help("the proportion of simulated mutations that are fully clonal (ccf = 1.0)"))
+                .arg(Arg::with_name("mutation-output")
+                    .short('m')
+                    .long("mutation-output")
+                    .takes_value(true)
+                    .help("output filename for simulated mutations"))
                 .arg(Arg::with_name("per-site-output")
                     .long("per-site-output")
                     .takes_value(false)
@@ -154,6 +154,7 @@ fn main() {
         let per_site_output = matches.is_present("per-site-output");
         let p_clonal = value_t!(matches, "proportion-clonal", f64).unwrap_or(0.9);
         let ccf = CancerCellFraction { p_clonal: p_clonal, subclonal_ccf: Beta::new(2.0, 2.0).unwrap() };
+        let mutation_output = matches.value_of("mutation-output").unwrap_or("simulated_mutations.tsv");
 
         let params = ModelParameters { 
             mutation_rate: muts_per_megabase / 1000000.0, // per haplotype
@@ -163,7 +164,7 @@ fn main() {
             purity: purity,
             error_rate: error_rate
         };
-        sim_pileup(&params, matches.value_of("genome").unwrap(), per_site_output);
+        sim_pileup(&params, matches.value_of("genome").unwrap(), per_site_output, &mutation_output);
     }
 }
 
@@ -305,7 +306,7 @@ fn extract_mutations(input_bam: &str, reference_genome: &str, min_depth: u32, re
 }
 
 
-fn call_mutations(input_bam: &str, reference_genome: &str, region_opt: Option<&str>) {
+fn call_mutations(input_bam: &str, reference_genome: &str, _region_opt: Option<&str>) {
 
     let ccf = CancerCellFraction { p_clonal: 0.75, subclonal_ccf: Beta::new(2.0, 2.0).unwrap() };
     let params = ModelParameters { 
@@ -314,7 +315,7 @@ fn call_mutations(input_bam: &str, reference_genome: &str, region_opt: Option<&s
         ccf_dist: ccf,
         depth_dist: None,
         purity: 0.75,
-        error_rate: 0.05
+        error_rate: 0.02
     };
 
     /*
@@ -371,11 +372,10 @@ fn call_mutations(input_bam: &str, reference_genome: &str, region_opt: Option<&s
     let mut cache = ReadHaplotypeCache { cache: HashMap::new() };
     let mut ps = PileupStats::new();
 
-    // go to chromosome of interest
-    //let debug_position = 400546;
-    //bam.fetch( ("chr20", debug_position as i64, (debug_position + 1) as i64) );
-    
-    bam.fetch( chromosome_name );
+    println!("chromosome\tposition\treference_base\tvariant_base\tcanonical_type\tcanonical_context\taligned_depth\tmean_mapq\tproportion_phased\t\
+              hmajor_variant_count\thminor_variant_count\thmajor_vaf\thminor_vaf\th1_a\th1_c\th1_g\th1_t\th2_a\th2_c\th2_g\th2_t\t\
+              p_ref\tp_germline\tp_somatic");
+    bam.fetch( chromosome_name ).unwrap();
     for p in bam.pileup() {
         let pileup = p.unwrap();
         
@@ -448,12 +448,17 @@ fn call_mutations(input_bam: &str, reference_genome: &str, region_opt: Option<&s
 
         let ref_count_on_candidate_haplotype = ps.get_count_on_haplotype(reference_base_index, candidate_haplotype_index);
         let class_probs = calculate_class_probabilities_phased(alt_count_on_candidate_haplotype as u64, ref_count_on_candidate_haplotype as u64, &params);
+        let hmaj_vaf = alt_count_on_candidate_haplotype as f32 / ps.get_haplotype_depth(candidate_haplotype_index) as f32;
+        let hmin_vaf = alt_count_on_non_candidate_haplotype as f32 / ps.get_haplotype_depth(non_candidate_haplotype_index) as f32;
+
         let h0 = ps.get_haplotype_counts(candidate_haplotype_index);
         let h1 = ps.get_haplotype_counts(non_candidate_haplotype_index);
+        let mean_mapq = ps.mean_mapq;
+        let proportion_phased = ps.proportion_phased;
         if reference_base != variant_base && alt_count_on_candidate_haplotype >= min_variant_observations {
-            println!("{chromosome_name}\t{position}\t{reference_base}\t{variant_base}\t-\t\
-                      -\t-\t-\t{alt_count_on_candidate_haplotype}\t{alt_count_on_non_candidate_haplotype}\t\
-                      -\t-\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}",
+            println!("{chromosome_name}\t{position}\t{reference_base}\t{variant_base}\t-\t-\t\
+                      -\t{mean_mapq}\t{proportion_phased:.3}\t{alt_count_on_candidate_haplotype}\t{alt_count_on_non_candidate_haplotype}\t\
+                      {hmaj_vaf:.3}\t{hmin_vaf:.3}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}",
                       h0[0], h0[1], h0[2], h0[3],
                       h1[0], h1[1], h1[2], h1[3],
                       class_probs[0], class_probs[1], class_probs[2]);

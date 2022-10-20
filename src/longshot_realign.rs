@@ -4,13 +4,10 @@ use crate::utility::ReadHaplotypeCache;
 use rust_htslib::{bam::record::CigarStringView};
 use bio::stats::probs::{Prob};
 
-use longshot::estimate_alignment_parameters::estimate_alignment_parameters;
-use longshot::genotype_probs::{Genotype, GenotypeProbs, GenotypePriors};
-use longshot::util::{u8_to_string, dna_vec, parse_region_string, parse_target_names, DensityParameters};
+use longshot::genotype_probs::{Genotype, GenotypeProbs};
 use longshot::extract_fragments::{extract_fragment, create_augmented_cigarlist, CigarPos, ExtractFragmentParameters};
-use longshot::realignment::{AlignmentType, AlignmentParameters};
-use longshot::haplotype_assembly::generate_flist_buffer;
-use longshot::variants_and_fragments::{Var, VarFilter, Fragment};
+use longshot::realignment::{AlignmentParameters};
+use longshot::variants_and_fragments::{Var, VarFilter};
 
 //
 fn create_var(tid: u32, pos0: usize, ref_allele: char, alt_allele: char) -> Var {
@@ -64,6 +61,7 @@ pub fn recalculate_pileup(ps: &PileupStats,
 {
     let mut rcps = PileupStats::new();
     rcps.mean_mapq = ps.mean_mapq;
+    rcps.proportion_phased = ps.proportion_phased;
     let var = create_var(tid, reference_position, ref_allele, alt_allele);
     
     let ref_index = base2index(ref_allele) as u32;
@@ -74,7 +72,7 @@ pub fn recalculate_pileup(ps: &PileupStats,
             continue;
         }
 
-        if let Some(qpos) = a.qpos() {
+        if let Some(_qpos) = a.qpos() {
             if let Some(mut hi) = cache.get(&a.record()) {
                 // perform realignment
                 let varlist = vec![ var.clone() ];
