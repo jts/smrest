@@ -10,6 +10,8 @@ use std::collections::{HashSet, HashMap};
 use clap::{App, SubCommand, Arg, value_t};
 use itertools::Itertools;
 use statrs::distribution::{Beta, Poisson};
+use fishers_exact::fishers_exact;
+use bio::stats::{Prob, PHREDProb};
 
 mod pileup_stats;
 use crate::pileup_stats::PileupStats;
@@ -105,11 +107,11 @@ fn main() {
                     .long("genome")
                     .takes_value(true)
                     .help("the reference genome"))
-                .arg(Arg::with_name("regions")
-                    .short('r')
-                    .long("regions")
+                .arg(Arg::with_name("chromosome")
+                    .short('c')
+                    .long("chromosome")
                     .takes_value(true)
-                    .help("only call within these regions"))
+                    .help("only call on this chromosome"))
                 .arg(Arg::with_name("input-bam")
                     .required(true)
                     .index(1)
@@ -141,7 +143,7 @@ fn main() {
     } else if let Some(matches) = matches.subcommand_matches("call") {
         call_mutations(matches.value_of("input-bam").unwrap(),
                        matches.value_of("genome").unwrap(),
-                       matches.value_of("regions"));
+                       matches.value_of("chromosome").unwrap_or("chr19"));
     } else if let Some(matches) = matches.subcommand_matches("error-contexts") {
         error_contexts(matches.value_of("input-bam").unwrap(),
                        matches.value_of("genome").unwrap(),
@@ -306,7 +308,7 @@ fn extract_mutations(input_bam: &str, reference_genome: &str, min_depth: u32, re
 }
 
 
-fn call_mutations(input_bam: &str, reference_genome: &str, _region_opt: Option<&str>) {
+fn call_mutations(input_bam: &str, reference_genome: &str, chromosome_name: &str) {
 
     let ccf = CancerCellFraction { p_clonal: 0.75, subclonal_ccf: Beta::new(2.0, 2.0).unwrap() };
     let params = ModelParameters { 
@@ -337,7 +339,6 @@ fn call_mutations(input_bam: &str, reference_genome: &str, _region_opt: Option<&
     let bases = "ACGT";
     let min_mapq = 50;
     let max_cigar_indel = 20;
-    let chromosome_name = "chr20";
     let min_variant_observations = 3;
     //let max_variant_minor_observations = 1;
     let min_variant_observations_per_strand = 1;
@@ -374,8 +375,10 @@ fn call_mutations(input_bam: &str, reference_genome: &str, _region_opt: Option<&
 
     println!("chromosome\tposition\treference_base\tvariant_base\tcanonical_type\tcanonical_context\taligned_depth\tmean_mapq\tproportion_phased\t\
               hmajor_variant_count\thminor_variant_count\thmajor_vaf\thminor_vaf\th1_a\th1_c\th1_g\th1_t\th2_a\th2_c\th2_g\th2_t\t\
-              p_ref\tp_germline\tp_somatic");
+              strand_bias_pvalue\tp_ref\tp_germline\tp_somatic");
+
     bam.fetch( chromosome_name ).unwrap();
+
     for p in bam.pileup() {
         let pileup = p.unwrap();
         
@@ -455,12 +458,39 @@ fn call_mutations(input_bam: &str, reference_genome: &str, _region_opt: Option<&
         let h1 = ps.get_haplotype_counts(non_candidate_haplotype_index);
         let mean_mapq = ps.mean_mapq;
         let proportion_phased = ps.proportion_phased;
+        let fishers_result = fishers_exact(&[ ps.get( reference_base_index, candidate_haplotype_index, 0),    ps.get( reference_base_index, candidate_haplotype_index, 1),
+                                        ps.get( candidate_variant_index, candidate_haplotype_index, 0), ps.get( candidate_variant_index, candidate_haplotype_index, 1) ]).unwrap();
+
+        // straight from longshot
+        let strand_bias_pvalue = if fishers_result.two_tail_pvalue <= 500.0 {
+            *PHREDProb::from(Prob(fishers_result.two_tail_pvalue))
+        } else {
+            500.0
+        };
+
+        // grab reference context
+        let mut reference_context = chromosome_bytes[ (reference_position - 1)..(reference_position + 2)].to_vec();
+        
+        // grab mutation type
+        let mut mutation_type: [char; 3] = [ reference_base, '>', variant_base ];
+
+        // convert mutation type/context to canonical form C>x, T>x
+        if mutation_type[0] != 'C' && mutation_type[0] != 'T' {
+            mutation_type[0] = bio::alphabets::dna::complement(mutation_type[0] as u8) as char;
+            mutation_type[2] = bio::alphabets::dna::complement(mutation_type[2] as u8) as char;
+            reference_context = bio::alphabets::dna::revcomp(reference_context);
+        }
+        
+        let mutation_type_str = String::from_iter(&mutation_type);
+        let context_str = std::str::from_utf8(&reference_context).unwrap();
+        let aligned_depth = ps.get_haplotype_depth(0) + ps.get_haplotype_depth(1);
+
         if reference_base != variant_base && alt_count_on_candidate_haplotype >= min_variant_observations {
-            println!("{chromosome_name}\t{position}\t{reference_base}\t{variant_base}\t-\t-\t\
-                      -\t{mean_mapq}\t{proportion_phased:.3}\t{alt_count_on_candidate_haplotype}\t{alt_count_on_non_candidate_haplotype}\t\
-                      {hmaj_vaf:.3}\t{hmin_vaf:.3}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}",
+            println!("{chromosome_name}\t{position}\t{reference_base}\t{variant_base}\t{mutation_type_str}\t{context_str}\t\
+                      {aligned_depth}\t{mean_mapq}\t{proportion_phased:.3}\t{alt_count_on_candidate_haplotype}\t{alt_count_on_non_candidate_haplotype}\t\
+                      {hmaj_vaf:.3}\t{hmin_vaf:.3}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
                       h0[0], h0[1], h0[2], h0[3],
-                      h1[0], h1[1], h1[2], h1[3],
+                      h1[0], h1[1], h1[2], h1[3], strand_bias_pvalue,
                       class_probs[0], class_probs[1], class_probs[2]);
         }
     }
@@ -469,6 +499,7 @@ fn call_mutations(input_bam: &str, reference_genome: &str, _region_opt: Option<&
 fn error_contexts(input_bam: &str, reference_genome: &str, variants_vcf: &str) {
 
     let chromosome_name = String::from("chr20");
+    let k = 9;
 
     // read variants into a set, we ignore these positions
     let mut variant_mask: HashSet< (String, usize) > = HashSet::new();
@@ -514,7 +545,10 @@ fn error_contexts(input_bam: &str, reference_genome: &str, variants_vcf: &str) {
             continue;
         }
 
-        let reference_context_fwd = chromosome_bytes[ (reference_position - 2)..(reference_position + 3)].to_vec();
+        assert!(k % 2 == 1);
+        let h = k / 2;
+
+        let reference_context_fwd = chromosome_bytes[ (reference_position - h)..(reference_position + h + 1)].to_vec();
         let context_str_fwd = String::from_utf8(reference_context_fwd.clone()).unwrap();
         
         let reference_context_rev = bio::alphabets::dna::revcomp(reference_context_fwd);

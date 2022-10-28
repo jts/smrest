@@ -15,5 +15,6 @@ statrs = "0.15.0"
 intervaltree = "*"
 csv = "*"
 approx = "*"
+fishers_exact = "*"
 cached = "*"
 longshot = { path = "../longshot" }
