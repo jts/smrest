@@ -29,6 +29,9 @@ use crate::utility::{ReadHaplotypeCache, GenomeRegions};
 mod longshot_realign;
 use longshot_realign::recalculate_pileup;
 
+mod calling_models;
+use crate::calling_models::{CallingModel, calling_model_to_str, str_to_calling_model};
+
 use longshot::util::{dna_vec, parse_region_string, parse_target_names};
 use longshot::realignment::AlignmentType;
 use longshot::extract_fragments::{ExtractFragmentParameters};
@@ -111,6 +114,11 @@ fn main() {
                     .long("region")
                     .takes_value(true)
                     .help("the reference region to call"))
+                .arg(Arg::with_name("model")
+                    .short('m')
+                    .long("model")
+                    .takes_value(true)
+                    .help("the probabilistic model used to call mutations (raw-pileup, realigned-pileup)"))
                 .arg(Arg::with_name("input-bam")
                     .required(true)
                     .index(1)
@@ -140,9 +148,12 @@ fn main() {
                           min_depth,
                           matches.value_of("regions"));
     } else if let Some(matches) = matches.subcommand_matches("call") {
+        let model_str = matches.value_of("model").unwrap_or("realigned-pileup");
+        let model = str_to_calling_model(model_str).expect("unknown calling model");
         call_mutations(matches.value_of("input-bam").unwrap(),
                        matches.value_of("region").unwrap(),
-                       matches.value_of("genome").unwrap())
+                       matches.value_of("genome").unwrap(),
+                       model)
     } else if let Some(matches) = matches.subcommand_matches("error-contexts") {
         error_contexts(matches.value_of("input-bam").unwrap(),
                        matches.value_of("genome").unwrap(),
@@ -307,7 +318,7 @@ fn extract_mutations(input_bam: &str, reference_genome: &str, min_depth: u32, re
 }
 
 
-fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str) {
+fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, model: CallingModel) {
 
     let ccf = CancerCellFraction { p_clonal: 0.75, subclonal_ccf: Beta::new(2.0, 2.0).unwrap() };
     let params = ModelParameters { 
@@ -379,6 +390,8 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str) {
 
     // set up vcf output
     let mut vcf_header = BcfHeader::new();
+    vcf_header.push_record(b"##source=smrest");
+    vcf_header.push_record(format!("##model={}", calling_model_to_str(model)).as_bytes());
 
     // add contig lines to header
     for tid in 0..header_view.target_count() {
@@ -432,8 +445,11 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str) {
         let variant_base = bases.as_bytes()[candidate_variant_index as usize] as char;
         
         // determine whether to re-align reads around this locus
-        if alt_count_on_candidate_haplotype >= min_obs_for_realign && 
-            ps.get_haplotype_depth(candidate_haplotype_index) - alt_count_on_candidate_haplotype >= min_obs_for_realign {
+        let non_alt_count_on_candidate_haplotype = ps.get_haplotype_depth(candidate_haplotype_index) - alt_count_on_candidate_haplotype;
+
+        if model == CallingModel::RealignedPileup &&
+           alt_count_on_candidate_haplotype >= min_obs_for_realign && 
+           non_alt_count_on_candidate_haplotype >= min_obs_for_realign {
             ps = recalculate_pileup(&ps, 
                                     reference_tid,
                                     reference_position as usize,
@@ -506,7 +522,7 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str) {
 
             // straight from longshot
             let strand_bias_pvalue = if fishers_result.two_tail_pvalue <= 500.0 {
-                *PHREDProb::from(Prob(fishers_result.two_tail_pvalue))
+                *PHREDProb::from(Prob(fishers_result.two_tail_pvalue.abs()))
             } else {
                 500.0
             };
