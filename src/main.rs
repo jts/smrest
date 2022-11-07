@@ -540,12 +540,12 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
             let h0_vaf = h0_ac as f32 / h0_depth as f32;
             let h1_vaf = h1_ac as f32 / h1_depth as f32;
             record.push_info_float(b"HaplotypeVAF", &[h0_vaf, h1_vaf]).expect("Could not add INFO");
-            /*
+            
             // grab reference context
-            let reference_context = &chromosome_bytes[ (reference_position as usize - 1)..(reference_position as usize + 2)];
+            let reference_context = &chromosome_bytes[ (var.pos0 as usize - 1)..(var.pos0 as usize + 2)];
             
             // grab mutation type
-            let mut mutation_type: [char; 3] = [ reference_base, '>', variant_base ];
+            let mut mutation_type: [char; 3] = [ reference_base, '>', alt_base ];
 
             // convert mutation type/context to canonical form C>x, T>x
             if mutation_type[0] != 'C' && mutation_type[0] != 'T' {
@@ -556,12 +556,13 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
             let mutation_type_str = String::from_iter(&mutation_type);
             record.push_info_string(b"MutationType", &[mutation_type_str.as_bytes()]).expect("Could not add INFO");
             record.push_info_string(b"SequenceContext", &[&reference_context]).expect("Could not add INFO");
-            */
+            
             //let mean_mapq = ps.mean_mapq;
             record.push_info_float(b"ProportionPhased", &[ps.proportion_phased]).expect("Could not add INFO");
 
-            let fishers_result = fishers_exact(&[ ps.get( reference_base_index, candidate_haplotype_index as u32, 0),    ps.get( reference_base_index, candidate_haplotype_index as u32, 1),
-                                               ps.get( candidate_variant_index, candidate_haplotype_index as u32, 0), ps.get( candidate_variant_index, candidate_haplotype_index as u32, 1) ]).unwrap();
+            let fishers_result = 
+                fishers_exact(&[ ps.get( reference_base_index, candidate_haplotype_index as u32, 0),    ps.get( reference_base_index, candidate_haplotype_index as u32, 1),
+                                 ps.get( candidate_variant_index, candidate_haplotype_index as u32, 0), ps.get( candidate_variant_index, candidate_haplotype_index as u32, 1) ]).unwrap();
 
             // straight from longshot
             let strand_bias_pvalue = if fishers_result.two_tail_pvalue <= 500.0 {
