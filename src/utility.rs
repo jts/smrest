@@ -40,7 +40,7 @@ impl ReadHaplotypeCache
     }
 }
 
-fn get_haplotag_from_record(record: &bam::Record) -> Option<i32> {
+pub fn get_haplotag_from_record(record: &bam::Record) -> Option<i32> {
     match record.aux(b"HP") {
         Ok(value) => {
             if let Aux::I32(v) = value {

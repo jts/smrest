@@ -3,6 +3,8 @@
 // Written by Jared Simpson (jared.simpson@oicr.on.ca)
 //---------------------------------------------------------
 use crate::utility::ReadHaplotypeCache;
+use crate::ReadHaplotypeLikelihood;
+use crate::LogProb;
 
 pub struct PileupStats
 {
@@ -110,6 +112,31 @@ impl PileupStats {
     pub fn clear(& mut self) -> () {
         self.base_counts = [0; 16];
         self.mean_mapq = 0.0;
+    }
+
+    pub fn fill_from_rhls(& mut self, min_allele_qual: LogProb, rhls: &Vec::<ReadHaplotypeLikelihood>) -> () {
+        let mut phased_reads: f32 = 0.0;
+        let mut total_reads: f32 = 0.0;
+        
+        for rhl in rhls {
+            assert!(rhl.allele_call.len() == 1);
+
+            if rhl.allele_call_qual > min_allele_qual {
+                continue;
+            }
+
+            total_reads += 1.0;
+            if let Some(mut hi) = rhl.haplotype_index {
+                hi -= 1; // phasing programs annotate with 1/2, we use 0/1
+                let base = rhl.allele_call.chars().next().unwrap() as char;
+                //println!("Setting {} {} to {} {}", rhl.read_name.as_ref().unwrap(), hi, base, *rhl.allele_call_qual);
+                let bi = base2index(base) as u32;
+                let si = rhl.strand_index as u32;
+                self.increment(bi, hi as u32, si);
+                phased_reads += 1.0;
+            }
+        }
+        self.proportion_phased = phased_reads / total_reads;
     }
 
     pub fn fill_pileup(& mut self, cache: &mut ReadHaplotypeCache, alignments: rust_htslib::bam::pileup::Alignments<'_>) -> () {

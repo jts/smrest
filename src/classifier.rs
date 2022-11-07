@@ -4,7 +4,9 @@
 //---------------------------------------------------------
 
 use statrs::distribution::{Binomial, Discrete, Poisson, Beta, ContinuousCDF};
+use bio::stats::{Prob, PHREDProb, LogProb};
 use cached::proc_macro::cached;
+use crate::longshot_realign::ReadHaplotypeLikelihood;
 
 // traits
 use statrs::statistics::{Min, Max};
@@ -227,5 +229,71 @@ pub fn calculate_class_probabilities_sgz(alt_count: u64, ref_count: u64, params:
         // this is not strictly what they do in the paper but works in our framework
         return [ 1.0, 0.0, 0.0 ];
     }
+}
+
+pub fn calculate_class_probabilities_likelihood(rhls: Vec<ReadHaplotypeLikelihood>, params: &ModelParameters) -> [f64;3] {
+
+    // calculate likelihood using the base
+    
+    //
+    // P(somatic | data) = P(data | somatic) P(somatic) / sum_class P(data | class )
+    //
+
+    // P(data | ref) = prod_reads P(read | ref haplotype)
+    let lp_data_ref:f64 = rhls.iter().map(|x| *x.base_allele_likelihood).sum();
+
+    // P(data | het) = prod_reads P(read | alt haplotype)
+    let lp_data_het:f64 = rhls.iter().map(|x| *x.mutant_allele_likelihood).sum();
+
+    // Integrate over purity/ccf as in phased model above
+    // P(data | somatic) = prod_reads P(read | alt haplotype) P(alt haplotype) + P(read | ref haplotype) P(ref haplotype)
+    // P(data | somatic) = sum_c Binom(alt_count, ref_count + alt_count, purity * c * (1 - error_rate) + (1 - purity*c) * error_rate ) P(c)
+    let bins = 10;
+    let step = 1.0 / 10 as f64;
+    let mut lp_data_somatic = 0.0;
+    for rhl in rhls {
+        let mut lp_read_somatic = LogProb::ln_zero();
+
+        for i in 0..bins {
+            let start = f64::from(i) * step;
+            let end = f64::from(i + 1) * step;
+            let c = (end + start) / 2.0;
+            let lp_c = LogProb::from(Prob(params.ccf_dist.cdf(end) - params.ccf_dist.cdf(start)));
+
+            let p_read_from_mutated_haplotype = params.purity * c;
+
+            let t1 = LogProb::from(Prob(p_read_from_mutated_haplotype)) + rhl.mutant_allele_likelihood;
+            let t2 = LogProb::from(Prob(1.0 - p_read_from_mutated_haplotype)) + rhl.base_allele_likelihood;
+            let s = LogProb::ln_add_exp(t1, t2) + lp_c;
+            lp_read_somatic = LogProb::ln_add_exp(lp_read_somatic, s);
+        }
+        lp_data_somatic += *lp_read_somatic;
+        /*
+        println!("{} {} call: {} qual_log: {:.3} qual_p: {} allele scores: [ {:.3} {:.3} ] somatic: {:.3} {:.3}", 
+            rhl.read_name.unwrap(), rhl.haplotype_index.unwrap_or(-1), rhl.allele_call, *rhl.allele_call_qual, *Prob::from(rhl.allele_call_qual), *rhl.base_allele_likelihood, *rhl.mutant_allele_likelihood, *lp_read_somatic, lp_data_somatic);
+        */
+    }
+
+
+    // priors
+    let p_het = params.heterozygosity;
+    let p_somatic = params.mutation_rate;
+    let p_ref = 1.0 - p_het - p_somatic;
+    
+    let lp_t_ref = LogProb(lp_data_ref) + LogProb::from(Prob(p_ref));
+    let lp_t_het = LogProb(lp_data_het) + LogProb::from(Prob(p_het));
+    let lp_t_somatic = LogProb(lp_data_somatic) + LogProb::from(Prob(p_somatic));
+
+    let lp_sum = LogProb::ln_sum_exp( &[ lp_t_ref, lp_t_het, lp_t_somatic] );
+    let p_ref_data = Prob::from(lp_t_ref - lp_sum);
+    let p_het_data = Prob::from(lp_t_het - lp_sum);
+    let p_somatic_data = Prob::from(lp_t_somatic - lp_sum);
+    
+    /*
+    println!("data likelihoods: [ {} {} {} ]", lp_data_ref, lp_data_het, lp_data_somatic);
+    println!("sum: {}", *lp_sum);
+    println!("probabilities: [ {} {} {} ]", *p_ref_data, *p_het_data, *p_somatic_data);
+    */
+    return [ *p_ref_data, *p_het_data, *p_somatic_data ];
 }
 
