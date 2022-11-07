@@ -4,7 +4,7 @@
 //---------------------------------------------------------
 
 use statrs::distribution::{Binomial, Discrete, Poisson, Beta, ContinuousCDF};
-use bio::stats::{Prob, PHREDProb, LogProb};
+use bio::stats::{Prob, LogProb};
 use cached::proc_macro::cached;
 use crate::longshot_realign::ReadHaplotypeLikelihood;
 

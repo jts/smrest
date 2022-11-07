@@ -27,12 +27,12 @@ mod utility;
 use crate::utility::{ReadHaplotypeCache, GenomeRegions, get_haplotag_from_record};
 
 mod longshot_realign;
-use longshot_realign::{recalculate_pileup, calculate_likelihoods, ReadHaplotypeLikelihood};
+use longshot_realign::{ReadHaplotypeLikelihood};
 
 mod calling_models;
 use crate::calling_models::{CallingModel, calling_model_to_str, str_to_calling_model};
 
-use longshot::util::{dna_vec, parse_region_string, parse_target_names};
+use longshot::util::{parse_region_string};
 use longshot::realignment::AlignmentType;
 use longshot::extract_fragments::{ExtractFragmentParameters, extract_fragments};
 use longshot::estimate_alignment_parameters::estimate_alignment_parameters;
@@ -346,17 +346,13 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
         ts_tv_ratio,
     ).unwrap();
 
-    let bases = "ACGT";
     let min_mapq = 50;
     let max_cigar_indel = 20;
-    let min_variant_observations = 3;
     let min_p_somatic = 0.0001;
-    let min_obs_for_realign = 3;
     let min_allele_call_qual = LogProb::from(Prob(0.01));
 
     //let max_variant_minor_observations = 1;
     let min_variant_observations_per_strand = 1;
-    let t_names = parse_target_names(&input_bam.to_owned()).unwrap();
     
     let extract_fragment_parameters = ExtractFragmentParameters {
         min_mapq: min_mapq,
@@ -384,10 +380,7 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
     let mut chromosome_sequence = faidx.fetch_seq_string(&region.chrom, 0, chromosome_length).unwrap();
     chromosome_sequence.make_ascii_uppercase();
     let chromosome_bytes = chromosome_sequence.as_bytes();
-    let chromosome_char_vec = dna_vec(chromosome_bytes);
     
-    let mut ps = PileupStats::new();
-
     // set up vcf output
     let mut vcf_header = BcfHeader::new();
     vcf_header.push_record(b"##source=smrest");
@@ -427,7 +420,7 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
             LogProb::from(Prob(0.000000000001)),
             ).expect("Could not find candidate variants");
 
-    for mut var in &mut varlist.lst {
+    for var in &mut varlist.lst {
         //println!("{}\t{}\t{}\t{}\t{}", var.tid, var.pos0 + 1, var.alleles.len(), var.alleles[0], var.alleles[1]);
         if var.alleles.len() > 2 {
             // trim, TODO: handle multi-allelic better
@@ -572,167 +565,11 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
             };
             record.push_info_float(b"StrandBias", &[strand_bias_pvalue as f32]).expect("Could not add INFO");
           
-            /*
-            println!("{chromosome_name}\t{position}\t{reference_base}\t{variant_base}\t{mutation_type_str}\t{context_str}\t\
-                      {aligned_depth}\t{mean_mapq}\t{proportion_phased:.3}\t{alt_count_on_candidate_haplotype}\t{alt_count_on_non_candidate_haplotype}\t\
-                      {hmaj_vaf:.3}\t{hmin_vaf:.3}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
-                      h0[0], h0[1], h0[2], h0[3],
-                      h1[0], h1[1], h1[2], h1[3], strand_bias_pvalue,
-                      class_probs[0], class_probs[1], class_probs[2]);
-            */
-            vcf.write(&record).unwrap();
-
-        }
-    }
-
-
-    /*
-    for p in bam.pileup() {
-        let pileup = p.unwrap();
-        
-        // check whether we should bother with this position
-        let reference_tid = pileup.tid();
-        let reference_position = pileup.pos();
-        
-        // bam.fetch will include all reads that cross a single base in the ROI
-        // the pileup will produce each column for any read in this region
-        // we subset the pileup down to our ROI here
-        if reference_position < region.start_pos || reference_position > region.end_pos {
-            continue;
-        } 
-
-        let reference_base = chromosome_bytes[reference_position as usize] as char;
-        if reference_base == 'N' {
-            continue;
-        }
-
-        // Naive pileup
-        ps.fill_pileup(&mut cache, pileup.alignments());
-        
-        // Calculate most frequently observed non-reference base on either haplotype
-        let reference_base_index = base2index(reference_base) as u32;
-        let (candidate_haplotype_index, candidate_variant_index) = ps.select_candidate_alt(reference_base_index, min_variant_observations_per_strand);
-
-        let mut alt_count_on_candidate_haplotype = ps.get_count_on_haplotype(candidate_variant_index, candidate_haplotype_index);
-        let variant_base = bases.as_bytes()[candidate_variant_index as usize] as char;
-        
-        // determine whether to re-align reads around this locus
-        let non_alt_count_on_candidate_haplotype = ps.get_haplotype_depth(candidate_haplotype_index) - alt_count_on_candidate_haplotype;
-
-        if model == CallingModel::RealignedPileup &&
-           alt_count_on_candidate_haplotype >= min_obs_for_realign && 
-           non_alt_count_on_candidate_haplotype >= min_obs_for_realign {
-           ps = recalculate_pileup(&ps, 
-                                    reference_tid,
-                                    reference_position as usize,
-                                    &chromosome_char_vec, 
-                                    &t_names,
-                                    reference_base, 
-                                    variant_base, 
-                                    &mut cache, 
-                                    pileup.alignments(), 
-                                    extract_fragment_parameters,
-                                    alignment_parameters);
-            alt_count_on_candidate_haplotype = ps.get_count_on_haplotype(candidate_variant_index, candidate_haplotype_index);
-        }
-
-        if alt_count_on_candidate_haplotype < min_variant_observations {
-            continue;
-        }
-
-        let class_probs = match model {
-            CallingModel::RawPileup | CallingModel::RealignedPileup => {
-                let ref_count_on_candidate_haplotype = ps.get_count_on_haplotype(reference_base_index, candidate_haplotype_index);
-                calculate_class_probabilities_phased(alt_count_on_candidate_haplotype as u64, ref_count_on_candidate_haplotype as u64, &params)
-            },
-            CallingModel::HaplotypeLikelihood => {
-                let rhls = calculate_likelihoods(reference_tid,
-                                                 reference_position as usize,
-                                                 (candidate_haplotype_index as i32) + 1,
-                                                 &chromosome_char_vec, 
-                                                 &t_names,
-                                                 reference_base, 
-                                                 variant_base, 
-                                                 &mut cache, 
-                                                 pileup.alignments(), 
-                                                 extract_fragment_parameters,
-                                                 alignment_parameters);
-                calculate_class_probabilities_likelihood(rhls, &params)
-            }
-        };
-
-        if reference_base != variant_base && alt_count_on_candidate_haplotype >= min_variant_observations && class_probs[2] > min_p_somatic {
-            let mut record = vcf.empty_record();
-            let rid = vcf.header().name2rid(region.chrom.as_bytes()).expect("Could not find reference id");
-            record.set_rid(Some(rid));
-            
-            record.set_pos(reference_position as i64); 
-
-            record.set_alleles(&[ &[reference_base as u8], &[variant_base as u8] ]).expect("Could not set alleles");
-
-            let mut qual = *PHREDProb::from(Prob(1.0 - class_probs[2]));
-            if qual > 500.0 {
-                qual = 500.0;
-            }
-            record.set_qual(qual as f32);
-
-            record.push_info_integer(b"SomaticHaplotypeIndex", &[candidate_haplotype_index as i32]).expect("Could not add INFO");
-
-            let h0_ac = ps.get_count_on_haplotype(candidate_variant_index, 0) as i32;
-            let h0_depth = ps.get_haplotype_depth(0) as i32;
-            
-            let h1_ac = ps.get_count_on_haplotype(candidate_variant_index, 1) as i32;
-            let h1_depth = ps.get_haplotype_depth(1) as i32;
-            
-            record.push_info_integer(b"HaplotypeAltCount", &[h0_ac, h1_ac]).expect("Could not add INFO");
-            record.push_info_integer(b"HaplotypeDepth", &[h0_depth, h1_depth]).expect("Could not add INFO");
-
-            let h0_vaf = h0_ac as f32 / h0_depth as f32;
-            let h1_vaf = h1_ac as f32 / h1_depth as f32;
-            record.push_info_float(b"HaplotypeVAF", &[h0_vaf, h1_vaf]).expect("Could not add INFO");
-            
-            // grab reference context
-            let reference_context = &chromosome_bytes[ (reference_position as usize - 1)..(reference_position as usize + 2)];
-            
-            // grab mutation type
-            let mut mutation_type: [char; 3] = [ reference_base, '>', variant_base ];
-
-            // convert mutation type/context to canonical form C>x, T>x
-            if mutation_type[0] != 'C' && mutation_type[0] != 'T' {
-                mutation_type[0] = bio::alphabets::dna::complement(mutation_type[0] as u8) as char;
-                mutation_type[2] = bio::alphabets::dna::complement(mutation_type[2] as u8) as char;
-            }
-
-            let mutation_type_str = String::from_iter(&mutation_type);
-            record.push_info_string(b"MutationType", &[mutation_type_str.as_bytes()]).expect("Could not add INFO");
-            record.push_info_string(b"SequenceContext", &[&reference_context]).expect("Could not add INFO");
-            
-            //let mean_mapq = ps.mean_mapq;
-            record.push_info_float(b"ProportionPhased", &[ps.proportion_phased]).expect("Could not add INFO");
-
-            let fishers_result = fishers_exact(&[ ps.get( reference_base_index, candidate_haplotype_index, 0),    ps.get( reference_base_index, candidate_haplotype_index, 1),
-                                            ps.get( candidate_variant_index, candidate_haplotype_index, 0), ps.get( candidate_variant_index, candidate_haplotype_index, 1) ]).unwrap();
-
-            // straight from longshot
-            let strand_bias_pvalue = if fishers_result.two_tail_pvalue <= 500.0 {
-                *PHREDProb::from(Prob(fishers_result.two_tail_pvalue))
-            } else {
-                500.0
-            };
-            record.push_info_float(b"StrandBias", &[strand_bias_pvalue as f32]).expect("Could not add INFO");
-            
-            /*
-            println!("{chromosome_name}\t{position}\t{reference_base}\t{variant_base}\t{mutation_type_str}\t{context_str}\t\
-                      {aligned_depth}\t{mean_mapq}\t{proportion_phased:.3}\t{alt_count_on_candidate_haplotype}\t{alt_count_on_non_candidate_haplotype}\t\
-                      {hmaj_vaf:.3}\t{hmin_vaf:.3}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
-                      h0[0], h0[1], h0[2], h0[3],
-                      h1[0], h1[1], h1[2], h1[3], strand_bias_pvalue,
-                      class_probs[0], class_probs[1], class_probs[2]);
-            */
             vcf.write(&record).unwrap();
         }
     }
-    */
+
+
 }
 
 fn error_contexts(input_bam: &str, reference_genome: &str, variants_vcf: &str) {

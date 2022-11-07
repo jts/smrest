@@ -83,27 +83,6 @@ impl PileupStats {
         return max_index;
     }
 
-    pub fn select_candidate_alt(&self, reference_base_index: u32, min_variant_observations_per_strand: u32) -> (u32, u32) {
-        let mut max_variant_count = 0;
-        let mut max_variant_index = 0;
-        let mut max_haplotype_index = 0;
-        
-        for hi in 0u32..2u32 {
-            for bi in 0u32..4u32 {
-                let b0 = self.get(bi, hi, 0);
-                let b1 = self.get(bi, hi, 1);
-                if bi != reference_base_index && (b0 + b1) > max_variant_count && 
-                    b0 >= min_variant_observations_per_strand && b1 >= min_variant_observations_per_strand {
-                    max_variant_count = b0 + b1;
-                    max_variant_index = bi;
-                    max_haplotype_index = hi;
-                }
-            }
-        }
-
-        return (max_haplotype_index, max_variant_index);
-    }
-
     pub fn new() -> PileupStats {
         let ps = PileupStats { base_counts: [0; 16], mean_mapq: 0.0, proportion_phased: 0.0 };
         return ps;
