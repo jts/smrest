@@ -12,6 +12,8 @@ use crate::longshot_realign::ReadHaplotypeLikelihood;
 use statrs::statistics::{Min, Max};
 use rand::Rng;
 
+static VERBOSE: bool = false;
+
 pub struct CancerCellFraction
 {
     pub p_clonal: f64,
@@ -268,10 +270,13 @@ pub fn calculate_class_probabilities_likelihood(rhls: Vec<ReadHaplotypeLikelihoo
             lp_read_somatic = LogProb::ln_add_exp(lp_read_somatic, s);
         }
         lp_data_somatic += *lp_read_somatic;
-        /*
-        println!("{} {} call: {} qual_log: {:.3} qual_p: {} allele scores: [ {:.3} {:.3} ] somatic: {:.3} {:.3}", 
-            rhl.read_name.unwrap(), rhl.haplotype_index.unwrap_or(-1), rhl.allele_call, *rhl.allele_call_qual, *Prob::from(rhl.allele_call_qual), *rhl.base_allele_likelihood, *rhl.mutant_allele_likelihood, *lp_read_somatic, lp_data_somatic);
-        */
+
+        if VERBOSE {
+            println!("{} {} call: {} qual_log: {:.3} qual_p: {} allele scores: [ {:.3} {:.3} ] somatic: {:.3} {:.3}", 
+                rhl.read_name.unwrap(), rhl.haplotype_index.unwrap_or(-1), rhl.allele_call, *rhl.allele_call_qual, 
+                *Prob::from(rhl.allele_call_qual), *rhl.base_allele_likelihood, *rhl.mutant_allele_likelihood, 
+                *lp_read_somatic, lp_data_somatic);
+        }
     }
 
 
@@ -289,11 +294,11 @@ pub fn calculate_class_probabilities_likelihood(rhls: Vec<ReadHaplotypeLikelihoo
     let p_het_data = Prob::from(lp_t_het - lp_sum);
     let p_somatic_data = Prob::from(lp_t_somatic - lp_sum);
     
-    /*
-    println!("data likelihoods: [ {} {} {} ]", lp_data_ref, lp_data_het, lp_data_somatic);
-    println!("sum: {}", *lp_sum);
-    println!("probabilities: [ {} {} {} ]", *p_ref_data, *p_het_data, *p_somatic_data);
-    */
+    if VERBOSE {
+        println!("data likelihoods: [ {} {} {} ]", lp_data_ref, lp_data_het, lp_data_somatic);
+        println!("sum: {}", *lp_sum);
+        println!("probabilities: [ {} {} {} ]", *p_ref_data, *p_het_data, *p_somatic_data);
+    }
     return [ *p_ref_data, *p_het_data, *p_somatic_data ];
 }
 
