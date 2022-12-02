@@ -55,6 +55,19 @@ pub fn get_haplotag_from_record(record: &bam::Record) -> Option<i32> {
     }
 }
 
+pub fn get_phase_set_from_record(record: &bam::Record) -> Option<i32> {
+    match record.aux(b"PS") {
+        Ok(value) => {
+            if let Aux::I32(v) = value {
+                return Some(v)
+            } else {
+                return None
+            }
+        }
+        Err(_e) => return None
+    }
+}
+
 pub struct GenomeRegions
 {
     interval_trees: HashMap::<u32, IntervalTree<usize, usize>>

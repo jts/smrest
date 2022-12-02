@@ -233,7 +233,7 @@ pub fn calculate_class_probabilities_sgz(alt_count: u64, ref_count: u64, params:
     }
 }
 
-pub fn calculate_class_probabilities_likelihood(rhls: Vec<ReadHaplotypeLikelihood>, params: &ModelParameters) -> [f64;3] {
+pub fn calculate_class_probabilities_likelihood(rhls: &Vec<ReadHaplotypeLikelihood>, params: &ModelParameters) -> [f64;3] {
 
     // calculate likelihood using the base
     
@@ -273,7 +273,7 @@ pub fn calculate_class_probabilities_likelihood(rhls: Vec<ReadHaplotypeLikelihoo
 
         if VERBOSE {
             println!("{} {} call: {} qual_log: {:.3} qual_p: {} allele scores: [ {:.3} {:.3} ] somatic: {:.3} {:.3}", 
-                rhl.read_name.unwrap(), rhl.haplotype_index.unwrap_or(-1), rhl.allele_call, *rhl.allele_call_qual, 
+                rhl.read_name.as_ref().unwrap(), rhl.haplotype_index.unwrap_or(-1), rhl.allele_call, *rhl.allele_call_qual, 
                 *Prob::from(rhl.allele_call_qual), *rhl.base_allele_likelihood, *rhl.mutant_allele_likelihood, 
                 *lp_read_somatic, lp_data_somatic);
         }

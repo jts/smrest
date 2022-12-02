@@ -24,10 +24,10 @@ mod classifier;
 use crate::classifier::*;
 
 mod utility;
-use crate::utility::{ReadHaplotypeCache, GenomeRegions, get_haplotag_from_record};
+use crate::utility::{ReadHaplotypeCache, GenomeRegions, get_haplotag_from_record, get_phase_set_from_record};
 
 mod longshot_realign;
-use longshot_realign::{ReadHaplotypeLikelihood};
+use longshot_realign::{ReadHaplotypeLikelihood, ReadMetadata};
 
 mod calling_models;
 use crate::calling_models::{CallingModel, calling_model_to_str, str_to_calling_model};
@@ -370,6 +370,8 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
 
     let min_mapq = 50;
     let max_cigar_indel = 20;
+    let max_softclip = 500;
+    let max_num_softclip_reads = 5;
     let soft_min_p_somatic = 1e-6;
     let hard_min_p_somatic = 1e-10;
     let min_allele_call_qual = LogProb::from(Prob(0.1));
@@ -431,6 +433,7 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
 
     // add info lines
     vcf_header.push_record(r#"##INFO=<ID=SomaticHaplotypeIndex,Number=1,Type=Integer,Description="Index of haplotype carrying the mutation">"#.as_bytes());
+    vcf_header.push_record(r#"##INFO=<ID=SoftClippedEvidenceReads,Number=1,Type=Integer,Description="Number of evidence reads that have long softclips">"#.as_bytes());
     vcf_header.push_record(r#"##INFO=<ID=HaplotypeAltCount,Number=2,Type=Integer,Description="Observed alt read count on each haplotype">"#.as_bytes());
     vcf_header.push_record(r#"##INFO=<ID=HaplotypeDepth,Number=2,Type=Integer,Description="Observed read count on each haplotype">"#.as_bytes());
     vcf_header.push_record(r#"##INFO=<ID=HaplotypeVAF,Number=2,Type=Float,Description="VAF on each haplotype">"#.as_bytes());
@@ -439,10 +442,12 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
     vcf_header.push_record(r#"##INFO=<ID=StrandBias,Number=1,Type=Float,Description="Strand bias p-value (PHRED scaled)">"#.as_bytes());
     vcf_header.push_record(r#"##INFO=<ID=ProportionPhased,Number=1,Type=Float,Description="Proportion of reads at this postion successfully phased">"#.as_bytes());
     vcf_header.push_record(r#"##INFO=<ID=ContextErrorRates,Number=.,Type=String,Description="Error rates at ref/alt sequence context">"#.as_bytes());
+    vcf_header.push_record(r#"##INFO=<ID=PhaseSets,Number=.,Type=Integer,Description="Phase sets seen in reads">"#.as_bytes());
     vcf_header.push_record(br#"##FILTER=<ID=MinObsPerStrand,Description="todo">"#);
     vcf_header.push_record(br#"##FILTER=<ID=LowQual,Description="todo">"#);
     vcf_header.push_record(br#"##FILTER=<ID=MaxOtherHaplotypeObservations,Description="todo">"#);
     vcf_header.push_record(br#"##FILTER=<ID=StrandBias,Description="todo">"#);
+    vcf_header.push_record(br#"##FILTER=<ID=ExcessiveSoftClips,Description="todo">"#);
 
     //vcf_header.push_sample("sample".as_bytes());
     let mut vcf = BcfWriter::from_stdout(&vcf_header, true, BcfFormat::Vcf).unwrap();
@@ -479,15 +484,32 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
                                   &extract_fragment_parameters,
                                   &alignment_parameters).unwrap();
     
-    // Populate haplotype and strand information for every read
+    // Populate haplotype, strand information and another other information we need from the bam
+    // TODO: handle multiple alignments per read, not just primary
     bam.fetch( (region.tid, region.start_pos, region.end_pos + 1) ).unwrap();
-    let mut read_meta = HashMap::<String, (Option<i32>, i32)>::new();
+    let mut read_meta = HashMap::<String, ReadMetadata>::new();
     for r in bam.records() {
         let record = r.unwrap();
+        
+        // same criteria as longshot
+        if record.is_quality_check_failed()
+            || record.is_duplicate()
+            || record.is_secondary()
+            || record.is_unmapped()
+            || record.is_supplementary()
+        {
+            continue;
+        }
+
         let s = String::from_utf8(record.qname().to_vec()).unwrap();
-        let hi = get_haplotag_from_record(&record);
-        let si = record.is_reverse() as i32;
-        read_meta.insert(s.clone(), (hi, si));
+        let rm = ReadMetadata { 
+            haplotype_index: get_haplotag_from_record(&record),
+            phase_set: get_phase_set_from_record(&record),
+            strand_index: record.is_reverse() as i32,
+            leading_softclips: record.cigar().leading_softclips(),
+            trailing_softclips: record.cigar().trailing_softclips()
+        };
+        read_meta.insert(s.clone(), rm);
     }
 
     // Convert fragments into read-haplotype likelihoods for every variant
@@ -496,7 +518,7 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
     for f in frags {
         let id = f.id.unwrap();
 
-        if let Some( (hi, si) ) = read_meta.get(&id) {
+        if let Some( rm ) = read_meta.get(&id) {
             for c in f.calls {
                 let var = &varlist.lst[c.var_ix];
                 //println!("{}\t{}\t{}\t{}\t{}\t{}", &id, var.tid, var.pos0 + 1, var.alleles[0], var.alleles[1], c.allele);
@@ -507,8 +529,8 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
                     base_allele_likelihood: c.allele_scores[0],
                     allele_call: var.alleles[c.allele as usize].clone(),
                     allele_call_qual: c.qual,
-                    haplotype_index: *hi,
-                    strand_index: *si
+                    haplotype_index: rm.haplotype_index,
+                    strand_index: rm.strand_index
                 };
                 rhl_per_var[c.var_ix].push(rhl);
             }
@@ -546,7 +568,7 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
 
         // +1 here to convert to be the same as the bam HP tag
         let rhls_by_hap = rhls.iter().filter(|x| x.haplotype_index.unwrap_or(-1) == (candidate_haplotype_index + 1)).cloned().collect();
-        let class_probs = calculate_class_probabilities_likelihood(rhls_by_hap, &params);
+        let class_probs = calculate_class_probabilities_likelihood(&rhls_by_hap, &params);
 
         // do not output sites below this threshold
         if class_probs[2] < hard_min_p_somatic {
@@ -567,6 +589,41 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
             record.push_filter("MinObsPerStrand".as_bytes()).unwrap();
         }
 
+        // Check for the evidence reads having excessively long softclips, which can indicate alignment artifacts
+        let mut num_evidence_reads = 0;
+        let mut num_softclipped_evidence_reads = 0;
+        let mut phase_sets = Vec::new();
+
+        for rhl in rhls_by_hap {
+            if rhl.allele_call != var.alleles[1] {
+                continue;
+            }
+
+            // lookup read metadata and check softclip lengths
+            let id = rhl.read_name.unwrap();
+            if let Some( rm ) = read_meta.get(&id) {
+                num_evidence_reads += 1;
+                if rm.leading_softclips >= max_softclip || rm.trailing_softclips >= max_softclip {
+                    num_softclipped_evidence_reads += 1
+                }
+
+                if let Some( phase_set) = rm.phase_set {
+                    phase_sets.push(phase_set);
+                }
+            }
+        }
+
+        record.push_info_integer(b"SoftClippedEvidenceReads", &[num_softclipped_evidence_reads as i32]).expect("Could not add INFO");
+        if num_softclipped_evidence_reads > max_num_softclip_reads {
+            record.push_filter("ExcessiveSoftClips".as_bytes()).unwrap();
+        }
+
+        if phase_sets.len() > 0 {
+            phase_sets.sort_unstable();
+            phase_sets.dedup();
+            record.push_info_integer(b"PhaseSets", &phase_sets).expect("Could not add INFO");
+        }
+        
         if class_probs[2] < soft_min_p_somatic {
             record.push_filter("LowQual".as_bytes()).unwrap();
         }
@@ -817,6 +874,7 @@ fn show_phase(input_bam: &str, position_str: &str, show_haplotype: i32) {
 
     // build read group to sample map
     let mut rg_to_sample = HashMap::< String, String >::new();
+
     for rg_entry in header.to_hashmap().get("RG").unwrap() {
         let id = rg_entry.get("ID").unwrap();
         let sm = rg_entry.get("SM").unwrap();
