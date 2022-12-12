@@ -171,7 +171,7 @@ pub fn calculate_class_probabilities_unphased(alt_count: u64, ref_count: u64, pa
 // https://en.wikipedia.org/wiki/Binomial_test
 // this function is slow so we approximate it by converting
 // the p parameter to an integer so it can be memoized 
-fn binomial_test_twosided(x: u64, n: u64, p: f64) -> f64 {
+pub fn binomial_test_twosided(x: u64, n: u64, p: f64) -> f64 {
     let pi = (p * 100.0) as u64;
     return binomial_test_twosided_memoized(x, n, pi);
 }
