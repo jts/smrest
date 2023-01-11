@@ -18,3 +18,4 @@ approx = "*"
 fishers_exact = "*"
 cached = "*"
 longshot = { path = "../longshot" }
+logaddexp = "*"

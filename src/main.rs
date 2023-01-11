@@ -783,14 +783,16 @@ fn genotype_hets(input_bam: &str, region_str: &str, candidates_vcf: &str, refere
     let max_cigar_indel = 20;
     let min_allele_call_qual = LogProb::from(Prob(0.1));
     let hard_min_depth = 20;
+    let min_informative_fraction = 0.75;
 
     let max_variant_minor_observations = 2;
-    let max_strand_bias = 20.0;
+    let max_strand_bias = 10.0;
     let context_model = ContextModel::init(5);
     
     let gt_hom_alt = [GenotypeAllele::Unphased(1), GenotypeAllele::Unphased(1)];
     let gt_hom_ref = [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)];
     let gt_het = [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(1)];
+    let gt_nocall = [GenotypeAllele::UnphasedMissing, GenotypeAllele::UnphasedMissing];
     
     let extract_fragment_parameters = ExtractFragmentParameters {
         min_mapq: min_mapq,
@@ -844,6 +846,7 @@ fn genotype_hets(input_bam: &str, region_str: &str, candidates_vcf: &str, refere
     vcf_header.push_record(r#"##INFO=<ID=LP,Number=2,Type=Float,Description="todo">"#.as_bytes());
     vcf_header.push_record(r#"##INFO=<ID=EP,Number=1,Type=Float,Description="todo">"#.as_bytes());
     vcf_header.push_record(r#"##INFO=<ID=StrandBias,Number=1,Type=Float,Description="Strand bias p-value (PHRED scaled)">"#.as_bytes());
+    vcf_header.push_record(r#"##INFO=<ID=InformativeFraction,Number=1,Type=Float,Description="Proportion of reads that could be used in allele calling">"#.as_bytes());
     vcf_header.push_record(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="sample genotype">"#.as_bytes());
     vcf_header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths (high-quality bases)">"#.as_bytes());
     vcf_header.push_sample("sample".as_bytes());
@@ -968,14 +971,13 @@ fn genotype_hets(input_bam: &str, region_str: &str, candidates_vcf: &str, refere
         let alt_support = ao0 + ao1;
         let total_support = ref_support + alt_support;
         let vaf = alt_support as f32 / total_support as f32;
-        
-        if total_reads < hard_min_depth {
-            continue;
-        }
+
+        let informative_fraction = total_support as f32 / total_reads as f32;
 
         // Make a conservative estimate of the error rate at this position using the context model
-        let mut error_rate = 0.02;
+        let mut error_rate = 0.05;
 
+        /*
         let cm = &extract_fragment_parameters.context_model;
         let context_probs = &alignment_parameters.context_emission_probs.probs;
         let half_k = cm.k / 2;
@@ -991,7 +993,7 @@ fn genotype_hets(input_bam: &str, region_str: &str, candidates_vcf: &str, refere
             //let context_ref_rev_er_str = format!("{}->{}:{:.3}", std::str::from_utf8(model_ref_context).unwrap(), alt_base, model_ref_er_ref);
             //println!("{} context model {} {}", var.pos0 + 1, context_ref_fwd_er_str, context_ref_rev_er_str);
         }
-
+        */
         let binom_test_ref = binomial_test_twosided(alt_support, total_support, error_rate);
         let binom_test_alt = binomial_test_twosided(alt_support, total_support, 1.0 - error_rate);
         
@@ -1010,7 +1012,6 @@ fn genotype_hets(input_bam: &str, region_str: &str, candidates_vcf: &str, refere
         let alt_lp = LogProb::from(Prob(binom_test_alt));
         record.push_info_float(b"LP", &[*ref_lp as f32, *alt_lp as f32]).expect("Could not add INFO");
         
-        
         let cm = &extract_fragment_parameters.context_model;
         let context_probs = &alignment_parameters.context_emission_probs.probs;
         let half_k = cm.k / 2;
@@ -1023,14 +1024,14 @@ fn genotype_hets(input_bam: &str, region_str: &str, candidates_vcf: &str, refere
             let model_ref_er_ref = context_probs[ cm.get_context_rank(model_ref_context, true).unwrap() ][alt_base_rank];
             let context_ref_fwd_er_str = format!("{}+>{}:{:.3}", std::str::from_utf8(model_ref_context).unwrap(), alt_base, model_ref_er_fwd);
             let context_ref_rev_er_str = format!("{}->{}:{:.3}", std::str::from_utf8(model_ref_context).unwrap(), alt_base, model_ref_er_ref);
-            println!("{} context model {} {}", var.pos0 + 1, context_ref_fwd_er_str, context_ref_rev_er_str);
+            //println!("{} context model {} {}", var.pos0 + 1, context_ref_fwd_er_str, context_ref_rev_er_str);
         }
 
         let fishers_result = 
             fishers_exact(&[ ro0 as u32, ro1 as u32,
                              ao0 as u32, ao1 as u32 ]).unwrap();
 
-        println!("{} StrandBiasData {} {} {} {}", var.pos0 + 1, ro0, ro1, ao0, ao1);
+        //println!("{} StrandBiasData {} {} {} {}", var.pos0 + 1, ro0, ro1, ao0, ao1);
 
         // straight from longshot
         let strand_bias_pvalue = if fishers_result.two_tail_pvalue <= 500.0 {
@@ -1039,6 +1040,7 @@ fn genotype_hets(input_bam: &str, region_str: &str, candidates_vcf: &str, refere
             500.0
         };
         record.push_info_float(b"StrandBias", &[strand_bias_pvalue as f32]).expect("Could not add INFO");
+        record.push_info_float(b"InformativeFraction", &[informative_fraction]).expect("Could not add INFO");
         
         // absolute hack for development
         let lp_threshold = LogProb::from(-10.0);
@@ -1050,16 +1052,14 @@ fn genotype_hets(input_bam: &str, region_str: &str, candidates_vcf: &str, refere
             &gt_hom_ref
         };
 
-        if strand_bias_pvalue > max_strand_bias {
-            alleles = &gt_hom_ref;
+        if strand_bias_pvalue > max_strand_bias || informative_fraction < min_informative_fraction || total_support < hard_min_depth {
+            alleles = &gt_nocall;
         }
         record.push_genotypes(alleles).unwrap();
 
         record.push_format_integer(b"AD", &[ref_support as i32, alt_support as i32]).expect("Could not add FORMAT");
         vcf.write(&record).unwrap();
     }
-
-
 }
 
 fn error_contexts(input_bam: &str, reference_genome: &str, variants_vcf: &str) {

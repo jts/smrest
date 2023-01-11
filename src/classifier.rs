@@ -4,7 +4,9 @@
 //---------------------------------------------------------
 
 use statrs::distribution::{Binomial, Discrete, Poisson, Beta, ContinuousCDF};
+use statrs::function::factorial;
 use bio::stats::{Prob, LogProb};
+use logaddexp::LogSumExp;
 use cached::proc_macro::cached;
 use crate::longshot_realign::ReadHaplotypeLikelihood;
 
@@ -172,13 +174,14 @@ pub fn calculate_class_probabilities_unphased(alt_count: u64, ref_count: u64, pa
 // this function is slow so we approximate it by converting
 // the p parameter to an integer so it can be memoized 
 pub fn binomial_test_twosided(x: u64, n: u64, p: f64) -> f64 {
-    let pi = (p * 100.0) as u64;
+    let pi = (p * 10000.0) as u64;
     return binomial_test_twosided_memoized(x, n, pi);
 }
 
 #[cached]
 fn binomial_test_twosided_memoized(x: u64, n: u64, pi: u64) -> f64 {
-    let p = pi as f64 / 100.0;
+    assert!(pi > 0);
+    let p = pi as f64 / 10000.0;
     let bn = Binomial::new(p, n).unwrap();
     let d = bn.pmf(x);
 
