@@ -189,6 +189,22 @@ fn binomial_test_twosided_memoized(x: u64, n: u64, pi: u64) -> f64 {
     return sum;
 }
 
+pub fn binomial_test_onesided_greater(x: u64, n: u64, p: f64) -> f64 {
+    let pi = (p * 10000.0) as u64;
+    return binomial_test_onesided_greater_memoized(x, n, pi);
+}
+
+#[cached]
+fn binomial_test_onesided_greater_memoized(x: u64, n: u64, pi: u64) -> f64 {
+    assert!(pi > 0);
+    let p = pi as f64 / 10000.0;
+    let bn = Binomial::new(p, n).unwrap();
+    let d = bn.pmf(x);
+
+    let sum = (x..=n).map(|i| bn.pmf(i)).sum();
+    return sum;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,7 +270,7 @@ pub fn calculate_class_probabilities_likelihood(rhls: &Vec<ReadHaplotypeLikeliho
     // P(data | somatic) = prod_reads P(read | alt haplotype) P(alt haplotype) + P(read | ref haplotype) P(ref haplotype)
     // P(data | somatic) = sum_c Binom(alt_count, ref_count + alt_count, purity * c * (1 - error_rate) + (1 - purity*c) * error_rate ) P(c)
     let bins = 10;
-    let step = 1.0 / 10 as f64;
+    let step = 1.0 / bins as f64;
     let mut lp_data_somatic = 0.0;
     for rhl in rhls {
         let mut lp_read_somatic = LogProb::ln_zero();
@@ -266,7 +282,7 @@ pub fn calculate_class_probabilities_likelihood(rhls: &Vec<ReadHaplotypeLikeliho
             let lp_c = LogProb::from(Prob(params.ccf_dist.cdf(end) - params.ccf_dist.cdf(start)));
 
             let p_read_from_mutated_haplotype = params.purity * c;
-
+            //println!("\t{:.3} {:.3} {:.3} {:.3}", start, end, *lp_c, p_read_from_mutated_haplotype);
             let t1 = LogProb::from(Prob(p_read_from_mutated_haplotype)) + rhl.mutant_allele_likelihood;
             let t2 = LogProb::from(Prob(1.0 - p_read_from_mutated_haplotype)) + rhl.base_allele_likelihood;
             let s = LogProb::ln_add_exp(t1, t2) + lp_c;
@@ -298,9 +314,9 @@ pub fn calculate_class_probabilities_likelihood(rhls: &Vec<ReadHaplotypeLikeliho
     let p_somatic_data = Prob::from(lp_t_somatic - lp_sum);
     
     if VERBOSE {
-        println!("data likelihoods: [ {} {} {} ]", lp_data_ref, lp_data_het, lp_data_somatic);
+        println!("data likelihoods: [ {:.1} {:.1} {:.1} ]", lp_data_ref, lp_data_het, lp_data_somatic);
         println!("sum: {}", *lp_sum);
-        println!("probabilities: [ {} {} {} ]", *p_ref_data, *p_het_data, *p_somatic_data);
+        println!("probabilities: [ {:.3} {:.3} {:.3} ]", *p_ref_data, *p_het_data, *p_somatic_data);
     }
     return [ *p_ref_data, *p_het_data, *p_somatic_data ];
 }
