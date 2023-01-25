@@ -1,5 +1,5 @@
 //---------------------------------------------------------
-// Copyright 2022 Ontario Institute for Cancer Research
+// Copyright 2023 Ontario Institute for Cancer Research
 // Written by Jared Simpson (jared.simpson@oicr.on.ca)
 //---------------------------------------------------------
 use rust_htslib::{bam, faidx, bam::Read};
