@@ -2,14 +2,13 @@
 // Copyright 2023 Ontario Institute for Cancer Research
 // Written by Jared Simpson (jared.simpson@oicr.on.ca)
 //---------------------------------------------------------
-use rust_htslib::{bam, faidx, bam::Read};
+use rust_htslib::{bam, bam::Read};
 use rust_htslib::bcf::{Writer as BcfWriter, Header as BcfHeader, Format as BcfFormat, record::GenotypeAllele};
 use bio::stats::{Prob, LogProb, PHREDProb};
 use fishers_exact::fishers_exact;
 use crate::pileup_stats::*;
-use crate::{ReadMetadata, ReadHaplotypeLikelihood};
+use crate::utility::*;
 use crate::binomial_test_onesided_greater;
-use crate::HashMap;
 use crate::LongshotParameters;
 use longshot::extract_fragments::extract_fragments;
 use longshot::variants_and_fragments::parse_vcf_potential_variants;
@@ -34,26 +33,12 @@ pub fn genotype(input_bam: &str, region_str: &str, candidates_vcf: &str, referen
     let region = parse_region_string(Some(region_str), &input_bam.to_owned()).expect("Could not parse region").unwrap();
     
     let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
-    let header = bam::Header::from_template(bam.header());
-    let header_view = bam::HeaderView::from_header(&header);
-    
-    // set up header and faidx for pulling reference sequence
-    let faidx = faidx::Reader::from_path(reference_genome).expect("Could not read reference genome:");
-    let chromosome_length = header_view.target_len(region.tid).unwrap() as usize;
-    let mut chromosome_sequence = faidx.fetch_seq_string(&region.chrom, 0, chromosome_length).unwrap();
-    chromosome_sequence.make_ascii_uppercase();
-    //let chromosome_bytes = chromosome_sequence.as_bytes();
+    let header_view = bam.header();
     
     // set up vcf output
     let mut vcf_header = BcfHeader::new();
     vcf_header.push_record(b"##source=smrest genotype-hets");
-
-    // add contig lines to header
-    for tid in 0..header_view.target_count() {
-        let l = format!("##contig=<ID={},length={}", std::str::from_utf8(header_view.tid2name(tid)).unwrap(), 
-                                                     header_view.target_len(tid).unwrap());
-        vcf_header.push_record(l.as_bytes());
-    }
+    add_contig_lines_to_vcf(&mut vcf_header, header_view);
 
     // add info lines
     vcf_header.push_record(r#"##INFO=<ID=TotalDepth,Number=1,Type=Integer,Description="Total number of reads aligned across this position">"#.as_bytes());
@@ -81,56 +66,10 @@ pub fn genotype(input_bam: &str, region_str: &str, candidates_vcf: &str, referen
                                   &longshot_parameters.alignment_parameters.as_ref().unwrap()).unwrap();
     
     // populate read metadata
-    bam.fetch( (region.tid, region.start_pos, region.end_pos + 1) ).unwrap();
-    let mut read_meta = HashMap::<String, ReadMetadata>::new();
-    for r in bam.records() {
-        let record = r.unwrap();
-        
-        // same criteria as longshot
-        if record.is_quality_check_failed()
-            || record.is_duplicate()
-            || record.is_secondary()
-            || record.is_unmapped()
-            || record.is_supplementary()
-        {
-            continue;
-        }
-
-        let s = String::from_utf8(record.qname().to_vec()).unwrap();
-        let rm = ReadMetadata { 
-            haplotype_index: None,
-            phase_set: None,
-            strand_index: record.is_reverse() as i32,
-            leading_softclips: record.cigar().leading_softclips(),
-            trailing_softclips: record.cigar().trailing_softclips()
-        };
-        read_meta.insert(s.clone(), rm);
-    }
+    let read_meta = populate_read_metadata_from_bam(&mut bam, &region);
 
     // Convert fragments into read-haplotype likelihoods for every variant
-    let mut rhl_per_var = vec![ Vec::<ReadHaplotypeLikelihood>::new(); varlist.lst.len() ];
-
-    for f in frags {
-        let id = f.id.unwrap();
-
-        if let Some( rm ) = read_meta.get(&id) {
-            for c in f.calls {
-                let var = &varlist.lst[c.var_ix];
-                //println!("{}\t{}\t{}\t{}\t{}\t{}", &id, var.tid, var.pos0 + 1, var.alleles[0], var.alleles[1], c.allele);
-            
-                let rhl = ReadHaplotypeLikelihood { 
-                    read_name: Some(id.clone()),
-                    mutant_allele_likelihood: c.allele_scores[1],
-                    base_allele_likelihood: c.allele_scores[0],
-                    allele_call: var.alleles[c.allele as usize].clone(),
-                    allele_call_qual: c.qual,
-                    haplotype_index: rm.haplotype_index,
-                    strand_index: rm.strand_index
-                };
-                rhl_per_var[c.var_ix].push(rhl);
-            }
-        }
-    }
+    let rhl_per_var = fragments_to_read_haplotype_likelihoods(&varlist, &frags, &read_meta);
 
     for i in 0..varlist.lst.len() {
         let var = &varlist.lst[i];

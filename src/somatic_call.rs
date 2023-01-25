@@ -2,7 +2,7 @@
 // Copyright 2023 Ontario Institute for Cancer Research
 // Written by Jared Simpson (jared.simpson@oicr.on.ca)
 //---------------------------------------------------------
-use rust_htslib::{bam, faidx, bam::Read};
+use rust_htslib::{bam, bam::Read};
 use rust_htslib::bcf::{Writer as BcfWriter, Header as BcfHeader, Format as BcfFormat};
 use bio::stats::{Prob, LogProb, PHREDProb};
 use fishers_exact::fishers_exact;
@@ -12,8 +12,6 @@ use crate::calling_models::*;
 use crate::utility::*;
 use crate::classifier::*;
 
-use crate::{ReadMetadata, ReadHaplotypeLikelihood};
-use crate::HashMap;
 use crate::LongshotParameters;
 use crate::ModelParameters;
 
@@ -23,8 +21,7 @@ use longshot::call_potential_snvs::call_potential_snvs;
 
 pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, model: CallingModel) {
 
-    let params = ModelParameters::defaults();
-
+    // somatic calling specific parameters
     let max_softclip = 500;
     let max_num_softclip_reads = 5;
     let soft_min_p_somatic = 1e-6;
@@ -37,33 +34,24 @@ pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, m
     let max_strand_bias = 20.0;
     let min_variant_observations = 3;
     let min_variant_observations_per_strand = 1;
+    
+    let params = ModelParameters::defaults();
     let mut longshot_parameters = LongshotParameters::defaults();
     longshot_parameters.estimate_alignment_parameters(&input_bam.to_owned(), &reference_genome.to_owned(), &None);
 
     let region = parse_region_string(Some(region_str), &input_bam.to_owned()).expect("Could not parse region").unwrap();
     
     let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
-    let header = bam::Header::from_template(bam.header());
-    let header_view = bam::HeaderView::from_header(&header);
+    let header_view = bam.header();
     
-    // set up header and faidx for pulling reference sequence
-    let faidx = faidx::Reader::from_path(reference_genome).expect("Could not read reference genome:");
-    let chromosome_length = header_view.target_len(region.tid).unwrap() as usize;
-    let mut chromosome_sequence = faidx.fetch_seq_string(&region.chrom, 0, chromosome_length).unwrap();
-    chromosome_sequence.make_ascii_uppercase();
-    let chromosome_bytes = chromosome_sequence.as_bytes();
+    // get entire reference chromosome
+    let chromosome_bytes = get_chromosome_sequence(reference_genome, header_view, region.tid).into_bytes();
     
     // set up vcf output
     let mut vcf_header = BcfHeader::new();
     vcf_header.push_record(b"##source=smrest");
     vcf_header.push_record(format!("##model={}", calling_model_to_str(model)).as_bytes());
-
-    // add contig lines to header
-    for tid in 0..header_view.target_count() {
-        let l = format!("##contig=<ID={},length={}", std::str::from_utf8(header_view.tid2name(tid)).unwrap(), 
-                                                     header_view.target_len(tid).unwrap());
-        vcf_header.push_record(l.as_bytes());
-    }
+    add_contig_lines_to_vcf(&mut vcf_header, header_view);
 
     // add info lines
     vcf_header.push_record(r#"##INFO=<ID=SomaticHaplotypeIndex,Number=1,Type=Integer,Description="Index of haplotype carrying the mutation">"#.as_bytes());
@@ -120,57 +108,10 @@ pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, m
                                   &longshot_parameters.alignment_parameters.as_ref().unwrap()).unwrap();
     
     // Populate haplotype, strand information and another other information we need from the bam
-    // TODO: handle multiple alignments per read, not just primary
-    bam.fetch( (region.tid, region.start_pos, region.end_pos + 1) ).unwrap();
-    let mut read_meta = HashMap::<String, ReadMetadata>::new();
-    for r in bam.records() {
-        let record = r.unwrap();
-        
-        // same criteria as longshot
-        if record.is_quality_check_failed()
-            || record.is_duplicate()
-            || record.is_secondary()
-            || record.is_unmapped()
-            || record.is_supplementary()
-        {
-            continue;
-        }
-
-        let s = String::from_utf8(record.qname().to_vec()).unwrap();
-        let rm = ReadMetadata { 
-            haplotype_index: get_haplotag_from_record(&record),
-            phase_set: get_phase_set_from_record(&record),
-            strand_index: record.is_reverse() as i32,
-            leading_softclips: record.cigar().leading_softclips(),
-            trailing_softclips: record.cigar().trailing_softclips()
-        };
-        read_meta.insert(s.clone(), rm);
-    }
+    let read_meta = populate_read_metadata_from_bam(&mut bam, &region);
 
     // Convert fragments into read-haplotype likelihoods for every variant
-    let mut rhl_per_var = vec![ Vec::<ReadHaplotypeLikelihood>::new(); varlist.lst.len() ];
-
-    for f in frags {
-        let id = f.id.unwrap();
-
-        if let Some( rm ) = read_meta.get(&id) {
-            for c in f.calls {
-                let var = &varlist.lst[c.var_ix];
-                //println!("{}\t{}\t{}\t{}\t{}\t{}", &id, var.tid, var.pos0 + 1, var.alleles[0], var.alleles[1], c.allele);
-            
-                let rhl = ReadHaplotypeLikelihood { 
-                    read_name: Some(id.clone()),
-                    mutant_allele_likelihood: c.allele_scores[1],
-                    base_allele_likelihood: c.allele_scores[0],
-                    allele_call: var.alleles[c.allele as usize].clone(),
-                    allele_call_qual: c.qual,
-                    haplotype_index: rm.haplotype_index,
-                    strand_index: rm.strand_index
-                };
-                rhl_per_var[c.var_ix].push(rhl);
-            }
-        }
-    }
+    let rhl_per_var = fragments_to_read_haplotype_likelihoods(&varlist, &frags, &read_meta);
 
     let cm = &longshot_parameters.extract_fragment_parameters.context_model;
     let context_probs = &longshot_parameters.alignment_parameters.as_ref().unwrap().context_emission_probs.probs;

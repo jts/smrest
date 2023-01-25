@@ -4,7 +4,7 @@
 //---------------------------------------------------------
 extern crate approx;
 
-use rust_htslib::{bam, faidx, bam::Read, bam::record::Aux};
+use rust_htslib::{bam, bam::Read, bam::record::Aux};
 use rust_htslib::bcf::{Reader as BcfReader, Read as BcfRead, Header as BcfHeader};
 use std::collections::{HashSet, HashMap};
 use clap::{App, SubCommand, Arg, value_t};
@@ -268,8 +268,7 @@ fn extract_mutations(input_bam: &str, reference_genome: &str, min_depth: u32, re
     let params = ModelParameters::defaults();
         
     let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
-    let header = bam::Header::from_template(bam.header());
-    let header_view = bam::HeaderView::from_header(&header);
+    let header_view = bam.header();
     let regions = match region_opt {
         Some(bed_filename) => Some(GenomeRegions::from_bed(bed_filename, &header_view)),
         None => None
@@ -285,14 +284,9 @@ fn extract_mutations(input_bam: &str, reference_genome: &str, min_depth: u32, re
     //let max_variant_minor_observations = 1;
     let min_variant_observations_per_strand = 1;
 
-    // set up header and faidx for pulling reference sequence
-    let faidx = faidx::Reader::from_path(reference_genome).expect("Could not read reference genome:");
     let tid = header_view.tid(chromosome_name.as_bytes()).unwrap();
-    let chromosome_length = header_view.target_len(tid).unwrap() as usize;
-    let mut chromosome_sequence = faidx.fetch_seq_string(chromosome_name, 0, chromosome_length).unwrap();
-    chromosome_sequence.make_ascii_uppercase();
-    let chromosome_bytes = chromosome_sequence.as_bytes();
-    
+    let chromosome_bytes = get_chromosome_sequence(reference_genome, header_view, tid).into_bytes();
+
     let mut cache = ReadHaplotypeCache { cache: HashMap::new() };
     let mut ps = PileupStats::new();
 
@@ -404,38 +398,9 @@ fn phase(input_bam: &str, region_str: &str, candidates_vcf: &str, reference_geno
     longshot_parameters.estimate_alignment_parameters(&input_bam.to_owned(), &reference_genome.to_owned(), &None);
     
     let region = parse_region_string(Some(region_str), &input_bam.to_owned()).expect("Could not parse region").unwrap();
-    
     let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
-    let header = bam::Header::from_template(bam.header());
-    let header_view = bam::HeaderView::from_header(&header);
     
-    // set up header and faidx for pulling reference sequence
-    let faidx = faidx::Reader::from_path(reference_genome).expect("Could not read reference genome:");
-    let chromosome_length = header_view.target_len(region.tid).unwrap() as usize;
-    let mut chromosome_sequence = faidx.fetch_seq_string(&region.chrom, 0, chromosome_length).unwrap();
-    chromosome_sequence.make_ascii_uppercase();
-    
-    // set up vcf output
-    let mut vcf_header = BcfHeader::new();
-    vcf_header.push_record(b"##source=smrest genotype-hets");
-
-    // add contig lines to header
-    for tid in 0..header_view.target_count() {
-        let l = format!("##contig=<ID={},length={}", std::str::from_utf8(header_view.tid2name(tid)).unwrap(), 
-                                                     header_view.target_len(tid).unwrap());
-        vcf_header.push_record(l.as_bytes());
-    }
-
-    // add info lines
-    vcf_header.push_record(r#"##INFO=<ID=TotalDepth,Number=1,Type=Integer,Description="Total number of reads aligned across this position">"#.as_bytes());
-    vcf_header.push_record(r#"##INFO=<ID=LP,Number=2,Type=Float,Description="todo">"#.as_bytes());
-    vcf_header.push_record(r#"##INFO=<ID=EP,Number=1,Type=Float,Description="todo">"#.as_bytes());
-    vcf_header.push_record(r#"##INFO=<ID=StrandBias,Number=1,Type=Float,Description="Strand bias p-value (PHRED scaled)">"#.as_bytes());
-    vcf_header.push_record(r#"##INFO=<ID=InformativeFraction,Number=1,Type=Float,Description="Proportion of reads that could be used in allele calling">"#.as_bytes());
-    vcf_header.push_record(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="sample genotype">"#.as_bytes());
-    vcf_header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths (high-quality bases)">"#.as_bytes());
-    vcf_header.push_sample("sample".as_bytes());
-
+    // read variants within this region
     let all_vars = parse_vcf_potential_variants(&candidates_vcf.to_owned(), &input_bam.to_owned())
                         .expect("Could not parse candidate variants file");
     
@@ -450,56 +415,10 @@ fn phase(input_bam: &str, region_str: &str, candidates_vcf: &str, reference_geno
                                   &longshot_parameters.alignment_parameters.as_ref().unwrap()).unwrap();
     
     // populate read metadata
-    bam.fetch( (region.tid, region.start_pos, region.end_pos + 1) ).unwrap();
-    let mut read_meta = HashMap::<String, ReadMetadata>::new();
-    for r in bam.records() {
-        let record = r.unwrap();
-        
-        // same criteria as longshot
-        if record.is_quality_check_failed()
-            || record.is_duplicate()
-            || record.is_secondary()
-            || record.is_unmapped()
-            || record.is_supplementary()
-        {
-            continue;
-        }
-
-        let s = String::from_utf8(record.qname().to_vec()).unwrap();
-        let rm = ReadMetadata { 
-            haplotype_index: None,
-            phase_set: None,
-            strand_index: record.is_reverse() as i32,
-            leading_softclips: record.cigar().leading_softclips(),
-            trailing_softclips: record.cigar().trailing_softclips()
-        };
-        read_meta.insert(s.clone(), rm);
-    }
+    let read_meta = populate_read_metadata_from_bam(&mut bam, &region);
 
     // Convert fragments into read-haplotype likelihoods for every variant
-    let mut rhl_per_var = vec![ Vec::<ReadHaplotypeLikelihood>::new(); varlist.lst.len() ];
-
-    for f in &frags {
-        let id = f.id.as_ref().unwrap().clone();
-
-        if let Some( rm ) = read_meta.get(&id) {
-            for c in &f.calls {
-                let var = &varlist.lst[c.var_ix];
-                //println!("{}\t{}\t{}\t{}\t{}\t{}", &id, var.tid, var.pos0 + 1, var.alleles[0], var.alleles[1], c.allele);
-            
-                let rhl = ReadHaplotypeLikelihood { 
-                    read_name: Some(id.clone()),
-                    mutant_allele_likelihood: c.allele_scores[1],
-                    base_allele_likelihood: c.allele_scores[0],
-                    allele_call: var.alleles[c.allele as usize].clone(),
-                    allele_call_qual: c.qual,
-                    haplotype_index: rm.haplotype_index,
-                    strand_index: rm.strand_index
-                };
-                rhl_per_var[c.var_ix].push(rhl);
-            }
-        }
-    }
+    let rhl_per_var = fragments_to_read_haplotype_likelihoods(&varlist, &frags, &read_meta);
 
     // compute set of candidate hets
     let mut candidate_hets = Vec::new();
@@ -652,15 +571,10 @@ fn error_contexts(input_bam: &str, reference_genome: &str, variants_vcf: &str) {
     }
 
     // set up header and faidx for pulling reference sequence
-    let faidx = faidx::Reader::from_path(reference_genome).expect("Could not read reference genome:");
     let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
-    let header = bam::Header::from_template(bam.header());
-    let header_view = bam::HeaderView::from_header(&header);
+    let header_view = bam.header();
     let tid = header_view.tid(chromosome_name.as_bytes()).unwrap();
-    let chromosome_length = header_view.target_len(tid).unwrap() as usize;
-    let mut chromosome_sequence = faidx.fetch_seq_string(chromosome_name.as_str(), 0, chromosome_length).unwrap();
-    chromosome_sequence.make_ascii_uppercase();
-    let chromosome_bytes = chromosome_sequence.as_bytes();
+    let chromosome_bytes = get_chromosome_sequence(reference_genome, header_view, tid).into_bytes();
     
    let mut context_counts = HashMap::new();
    let mut error_counts = HashMap::new();
