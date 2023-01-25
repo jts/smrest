@@ -3,6 +3,13 @@
 // Written by Jared Simpson (jared.simpson@oicr.on.ca)
 //---------------------------------------------------------
 use statrs::distribution::{Poisson, Beta, ContinuousCDF};
+use longshot::extract_fragments::{ExtractFragmentParameters};
+use longshot::context_model::ContextModel;
+use longshot::genotype_probs::GenotypePriors;
+use longshot::realignment::{AlignmentType, AlignmentParameters};
+use longshot::estimate_alignment_parameters::estimate_alignment_parameters;
+use longshot::util::GenomicInterval;
+use bio::stats::{Prob, LogProb};
 
 // traits
 use statrs::statistics::{Min, Max};
@@ -78,5 +85,71 @@ impl ModelParameters {
             purity: 0.75,
             error_rate: 0.05
         }
+    }
+}
+
+// Parameters for longshot modules
+pub struct LongshotParameters
+{
+    pub genotype_priors: GenotypePriors,
+    pub extract_fragment_parameters: ExtractFragmentParameters,
+    pub alignment_parameters: Option<AlignmentParameters>
+}
+
+//
+const MIN_MAPQ: u8 = 50;
+const CONTEXT_MODEL_K: usize = 5;
+
+impl LongshotParameters {
+    pub fn defaults() -> LongshotParameters {
+        let hom_snv_rate = LogProb::from(Prob(0.0005));
+        let het_snv_rate = LogProb::from(Prob(0.001));
+        let hom_indel_rate = LogProb::from(Prob(0.00005));
+        let het_indel_rate = LogProb::from(Prob(0.00001));
+        let ts_tv_ratio = 2.0 * 0.5; // from longshot defaults...
+
+        let gt_priors = GenotypePriors::new(
+            hom_snv_rate,
+            het_snv_rate,
+            hom_indel_rate,
+            het_indel_rate,
+            ts_tv_ratio,
+        ).unwrap();
+        
+        let context_model = ContextModel::init(CONTEXT_MODEL_K);
+    
+        let efp = ExtractFragmentParameters {
+            min_mapq: MIN_MAPQ,
+            alignment_type: AlignmentType::ForwardAlgorithmNumericallyStableWithContext,
+            //alignment_type: AlignmentType::ForwardAlgorithmNumericallyStable,
+            context_model: context_model,
+            band_width: 20,
+            anchor_length: 6,
+            variant_cluster_max_size: 3,
+            max_window_padding: 50,
+            max_cigar_indel: 20,
+            store_read_id: true
+        };
+
+        LongshotParameters {
+            genotype_priors: gt_priors,
+            extract_fragment_parameters: efp,
+            alignment_parameters: None
+        }
+    }
+
+    pub fn estimate_alignment_parameters(&mut self, 
+                                         bam_file: &String, 
+                                         fasta_file: &String, 
+                                         interval: &Option<GenomicInterval>) -> () {
+
+        self.alignment_parameters = 
+            Some(estimate_alignment_parameters(bam_file, 
+                                               fasta_file,
+                                               interval, 
+                                               60, // min mapq, more conservative here than extract parameters
+                                               self.extract_fragment_parameters.max_cigar_indel as u32, 
+                                               100000, // num reads
+                                               &self.extract_fragment_parameters.context_model).unwrap());
     }
 }

@@ -36,12 +36,8 @@ mod calling_models;
 use crate::calling_models::{CallingModel, calling_model_to_str, str_to_calling_model};
 
 use longshot::util::{parse_region_string};
-use longshot::realignment::AlignmentType;
-use longshot::extract_fragments::{ExtractFragmentParameters, extract_fragments};
-use longshot::estimate_alignment_parameters::estimate_alignment_parameters;
-use longshot::genotype_probs::GenotypePriors;
+use longshot::extract_fragments::extract_fragments;
 use longshot::call_potential_snvs::call_potential_snvs;
-use longshot::context_model::ContextModel;
 use longshot::variants_and_fragments::{Var, VarList, parse_vcf_potential_variants};
 
 fn main() {
@@ -396,22 +392,6 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
 
     let params = ModelParameters::defaults();
 
-    let hom_snv_rate = LogProb::from(Prob(0.0005));
-    let het_snv_rate = LogProb::from(Prob(0.001));
-    let hom_indel_rate = LogProb::from(Prob(0.00005));
-    let het_indel_rate = LogProb::from(Prob(0.00001));
-    let ts_tv_ratio = 2.0 * 0.5; // from longshot defaults...
-
-    let genotype_priors = GenotypePriors::new(
-        hom_snv_rate,
-        het_snv_rate,
-        hom_indel_rate,
-        het_indel_rate,
-        ts_tv_ratio,
-    ).unwrap();
-
-    let min_mapq = 50;
-    let max_cigar_indel = 20;
     let max_softclip = 500;
     let max_num_softclip_reads = 5;
     let soft_min_p_somatic = 1e-6;
@@ -424,30 +404,8 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
     let max_strand_bias = 20.0;
     let min_variant_observations = 3;
     let min_variant_observations_per_strand = 1;
-    let context_model = ContextModel::init(5);
-    
-    let extract_fragment_parameters = ExtractFragmentParameters {
-        min_mapq: min_mapq,
-        alignment_type: AlignmentType::ForwardAlgorithmNumericallyStableWithContext,
-        //alignment_type: AlignmentType::ForwardAlgorithmNumericallyStable,
-        context_model: context_model,
-        band_width: 20,
-        anchor_length: 6,
-        variant_cluster_max_size: 3,
-        max_window_padding: 50,
-        max_cigar_indel: max_cigar_indel as usize,
-        store_read_id: true
-    };
-
-    // estimate parameters for longshot HMM
-    let alignment_parameters = 
-        estimate_alignment_parameters(&input_bam.to_owned(), 
-                                      &reference_genome.to_owned(), 
-                                      &None, 
-                                      60, 
-                                      max_cigar_indel, 
-                                      100000, 
-                                      &extract_fragment_parameters.context_model).unwrap();
+    let mut longshot_parameters = LongshotParameters::defaults();
+    longshot_parameters.estimate_alignment_parameters(&input_bam.to_owned(), &reference_genome.to_owned(), &None);
 
     let region = parse_region_string(Some(region_str), &input_bam.to_owned()).expect("Could not parse region").unwrap();
     
@@ -500,13 +458,13 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
             &input_bam.to_owned(),
             &reference_genome.to_owned(),
             &Some(region.clone()),
-            &genotype_priors,
+            &longshot_parameters.genotype_priors,
             20,
             200,
             min_variant_observations, //potential_snv_min_alt_count,
             0.1, //potential_snv_min_alt_frac,
             50,
-            alignment_parameters.ln(),
+            longshot_parameters.alignment_parameters.as_ref().unwrap().ln(),
             LogProb::from(Prob(0.000000000001)),
             ).expect("Could not find candidate variants");
 
@@ -525,8 +483,8 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
                                   &reference_genome.to_owned(),
                                   &mut varlist,
                                   &Some(region.clone()),
-                                  &extract_fragment_parameters,
-                                  &alignment_parameters).unwrap();
+                                  &longshot_parameters.extract_fragment_parameters,
+                                  &longshot_parameters.alignment_parameters.as_ref().unwrap()).unwrap();
     
     // Populate haplotype, strand information and another other information we need from the bam
     // TODO: handle multiple alignments per read, not just primary
@@ -580,6 +538,10 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
             }
         }
     }
+
+    let cm = &longshot_parameters.extract_fragment_parameters.context_model;
+    let context_probs = &longshot_parameters.alignment_parameters.as_ref().unwrap().context_emission_probs.probs;
+    let half_k = cm.k / 2;
 
     for i in 0..varlist.lst.len() {
         let var = &varlist.lst[i];
@@ -739,9 +701,6 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
         }
 
         // annotate with the sequence context model error rates
-        let cm = &extract_fragment_parameters.context_model;
-        let context_probs = &alignment_parameters.context_emission_probs.probs;
-        let half_k = cm.k / 2;
         
         let model_ref_context = &chromosome_bytes[ (var.pos0 as usize - half_k)..(var.pos0 as usize + half_k + 1)];
         if cm.alphabet.is_word(model_ref_context) {
@@ -774,43 +733,19 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
 
 fn genotype_hets(input_bam: &str, region_str: &str, candidates_vcf: &str, reference_genome: &str) {
 
-    let min_mapq = 50;
-    let max_cigar_indel = 20;
     let min_allele_call_qual = LogProb::from(Prob(0.1));
     let hard_min_depth = 20;
     let min_informative_fraction = 0.75;
 
     let max_strand_bias = 10.0;
-    let context_model = ContextModel::init(5);
     
     let gt_hom_alt = [GenotypeAllele::Unphased(1), GenotypeAllele::Unphased(1)];
     let gt_hom_ref = [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)];
     let gt_het = [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(1)];
     let gt_nocall = [GenotypeAllele::UnphasedMissing, GenotypeAllele::UnphasedMissing];
+    let mut longshot_parameters = LongshotParameters::defaults();
+    longshot_parameters.estimate_alignment_parameters(&input_bam.to_owned(), &reference_genome.to_owned(), &None);
     
-    let extract_fragment_parameters = ExtractFragmentParameters {
-        min_mapq: min_mapq,
-        alignment_type: AlignmentType::ForwardAlgorithmNumericallyStableWithContext,
-        //alignment_type: AlignmentType::ForwardAlgorithmNumericallyStable,
-        context_model: context_model,
-        band_width: 20,
-        anchor_length: 6,
-        variant_cluster_max_size: 3,
-        max_window_padding: 50,
-        max_cigar_indel: max_cigar_indel as usize,
-        store_read_id: true
-    };
-
-    // estimate parameters for longshot HMM
-    let alignment_parameters = 
-        estimate_alignment_parameters(&input_bam.to_owned(), 
-                                      &reference_genome.to_owned(), 
-                                      &None, 
-                                      60, 
-                                      max_cigar_indel, 
-                                      100000, 
-                                      &extract_fragment_parameters.context_model).unwrap();
-
     let region = parse_region_string(Some(region_str), &input_bam.to_owned()).expect("Could not parse region").unwrap();
     
     let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
@@ -857,8 +792,8 @@ fn genotype_hets(input_bam: &str, region_str: &str, candidates_vcf: &str, refere
                                   &reference_genome.to_owned(),
                                   &mut varlist,
                                   &Some(region.clone()),
-                                  &extract_fragment_parameters,
-                                  &alignment_parameters).unwrap();
+                                  &longshot_parameters.extract_fragment_parameters,
+                                  &longshot_parameters.alignment_parameters.as_ref().unwrap()).unwrap();
     
     // populate read metadata
     bam.fetch( (region.tid, region.start_pos, region.end_pos + 1) ).unwrap();
@@ -1064,39 +999,15 @@ fn genotype_hets(input_bam: &str, region_str: &str, candidates_vcf: &str, refere
 
 fn phase(input_bam: &str, region_str: &str, candidates_vcf: &str, reference_genome: &str) {
 
-    let min_mapq = 50;
-    let max_cigar_indel = 20;
     let min_allele_call_qual = LogProb::from(Prob(0.1));
     let hard_min_depth = 20;
     let min_informative_fraction = 0.75;
 
     let max_strand_bias = 10.0;
-    let context_model = ContextModel::init(5);
     
+    let mut longshot_parameters = LongshotParameters::defaults();
+    longshot_parameters.estimate_alignment_parameters(&input_bam.to_owned(), &reference_genome.to_owned(), &None);
     
-    let extract_fragment_parameters = ExtractFragmentParameters {
-        min_mapq: min_mapq,
-        alignment_type: AlignmentType::ForwardAlgorithmNumericallyStableWithContext,
-        //alignment_type: AlignmentType::ForwardAlgorithmNumericallyStable,
-        context_model: context_model,
-        band_width: 20,
-        anchor_length: 6,
-        variant_cluster_max_size: 3,
-        max_window_padding: 50,
-        max_cigar_indel: max_cigar_indel as usize,
-        store_read_id: true
-    };
-
-    // estimate parameters for longshot HMM
-    let alignment_parameters = 
-        estimate_alignment_parameters(&input_bam.to_owned(), 
-                                      &reference_genome.to_owned(), 
-                                      &None, 
-                                      60, 
-                                      max_cigar_indel, 
-                                      100000, 
-                                      &extract_fragment_parameters.context_model).unwrap();
-
     let region = parse_region_string(Some(region_str), &input_bam.to_owned()).expect("Could not parse region").unwrap();
     
     let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
@@ -1140,8 +1051,8 @@ fn phase(input_bam: &str, region_str: &str, candidates_vcf: &str, reference_geno
                                   &reference_genome.to_owned(),
                                   &mut varlist,
                                   &Some(region.clone()),
-                                  &extract_fragment_parameters,
-                                  &alignment_parameters).unwrap();
+                                  &longshot_parameters.extract_fragment_parameters,
+                                  &longshot_parameters.alignment_parameters.as_ref().unwrap()).unwrap();
     
     // populate read metadata
     bam.fetch( (region.tid, region.start_pos, region.end_pos + 1) ).unwrap();
