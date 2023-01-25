@@ -23,6 +23,9 @@ use crate::simulation::*;
 mod classifier;
 use crate::classifier::*;
 
+mod parameters;
+use crate::parameters::*;
+
 mod utility;
 use crate::utility::{ReadHaplotypeCache, GenomeRegions, get_haplotag_from_record, get_phase_set_from_record};
 
@@ -239,9 +242,9 @@ fn main() {
         let muts_per_megabase = value_t!(matches, "tmb", f64).unwrap_or(5.0);
         let per_site_output = matches.is_present("per-site-output");
         let p_clonal = value_t!(matches, "proportion-clonal", f64).unwrap_or(0.9);
-        let ccf = CancerCellFraction { p_clonal: p_clonal, subclonal_ccf: Beta::new(2.0, 2.0).unwrap() };
         let mutation_output = matches.value_of("mutation-output").unwrap_or("simulated_mutations.tsv");
 
+        let ccf = CancerCellFraction { p_clonal: p_clonal, subclonal_ccf: Beta::new(2.0, 2.0).unwrap() };
         let params = ModelParameters { 
             mutation_rate: muts_per_megabase / 1000000.0, // per haplotype
             heterozygosity: 1.0 / 2000.0, // per haplotype
@@ -261,15 +264,7 @@ fn main() {
 
 fn extract_mutations(input_bam: &str, reference_genome: &str, min_depth: u32, region_opt: Option<&str>) {
 
-    let ccf = CancerCellFraction { p_clonal: 0.75, subclonal_ccf: Beta::new(2.0, 2.0).unwrap() };
-    let params = ModelParameters { 
-        mutation_rate: 5.0 / 1000000.0, // per haplotype
-        heterozygosity: 1.0 / 2000.0, // per haplotype
-        ccf_dist: ccf,
-        depth_dist: None,
-        purity: 0.75,
-        error_rate: 0.05
-    };
+    let params = ModelParameters::defaults();
         
     let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
     let header = bam::Header::from_template(bam.header());
@@ -399,15 +394,7 @@ fn extract_mutations(input_bam: &str, reference_genome: &str, min_depth: u32, re
 
 fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, model: CallingModel) {
 
-    let ccf = CancerCellFraction { p_clonal: 0.75, subclonal_ccf: Beta::new(2.0, 2.0).unwrap() };
-    let params = ModelParameters { 
-        mutation_rate: 5.0 / 1000000.0, // per haplotype
-        heterozygosity: 1.0 / 2000.0, // per haplotype
-        ccf_dist: ccf,
-        depth_dist: None,
-        purity: 0.75,
-        error_rate: 0.02
-    };
+    let params = ModelParameters::defaults();
 
     let hom_snv_rate = LogProb::from(Prob(0.0005));
     let het_snv_rate = LogProb::from(Prob(0.001));
@@ -628,10 +615,10 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
         let class_probs = calculate_class_probabilities_likelihood(&rhls_by_hap, &params);
 
         // do not output sites below this threshold
-/*        if class_probs[2] < hard_min_p_somatic {
+        if class_probs[2] < hard_min_p_somatic {
             continue;
         }
-*/
+
         let mut record = vcf.empty_record();
         let rid = vcf.header().name2rid(region.chrom.as_bytes()).expect("Could not find reference id");
         record.set_rid(Some(rid));
@@ -647,7 +634,6 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
         }
 
         // Check for the evidence reads having excessively long softclips, which can indicate alignment artifacts
-        let mut num_evidence_reads = 0;
         let mut num_softclipped_evidence_reads = 0;
         let mut phase_sets = Vec::new();
 
@@ -659,7 +645,6 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
             // lookup read metadata and check softclip lengths
             let id = rhl.read_name.unwrap();
             if let Some( rm ) = read_meta.get(&id) {
-                num_evidence_reads += 1;
                 if rm.leading_softclips >= max_softclip || rm.trailing_softclips >= max_softclip {
                     num_softclipped_evidence_reads += 1
                 }
@@ -789,37 +774,12 @@ fn call_mutations(input_bam: &str, region_str: &str, reference_genome: &str, mod
 
 fn genotype_hets(input_bam: &str, region_str: &str, candidates_vcf: &str, reference_genome: &str) {
 
-    let ccf = CancerCellFraction { p_clonal: 0.75, subclonal_ccf: Beta::new(2.0, 2.0).unwrap() };
-    let params = ModelParameters { 
-        mutation_rate: 5.0 / 1000000.0, // per haplotype
-        heterozygosity: 1.0 / 2000.0, // per haplotype
-        ccf_dist: ccf,
-        depth_dist: None,
-        purity: 0.75,
-        error_rate: 0.02
-    };
-
-    let hom_snv_rate = LogProb::from(Prob(0.0005));
-    let het_snv_rate = LogProb::from(Prob(0.001));
-    let hom_indel_rate = LogProb::from(Prob(0.00005));
-    let het_indel_rate = LogProb::from(Prob(0.00001));
-    let ts_tv_ratio = 2.0 * 0.5; // from longshot defaults...
-
-    let genotype_priors = GenotypePriors::new(
-        hom_snv_rate,
-        het_snv_rate,
-        hom_indel_rate,
-        het_indel_rate,
-        ts_tv_ratio,
-    ).unwrap();
-
     let min_mapq = 50;
     let max_cigar_indel = 20;
     let min_allele_call_qual = LogProb::from(Prob(0.1));
     let hard_min_depth = 20;
     let min_informative_fraction = 0.75;
 
-    let max_variant_minor_observations = 2;
     let max_strand_bias = 10.0;
     let context_model = ContextModel::init(5);
     
@@ -862,7 +822,7 @@ fn genotype_hets(input_bam: &str, region_str: &str, candidates_vcf: &str, refere
     let chromosome_length = header_view.target_len(region.tid).unwrap() as usize;
     let mut chromosome_sequence = faidx.fetch_seq_string(&region.chrom, 0, chromosome_length).unwrap();
     chromosome_sequence.make_ascii_uppercase();
-    let chromosome_bytes = chromosome_sequence.as_bytes();
+    //let chromosome_bytes = chromosome_sequence.as_bytes();
     
     // set up vcf output
     let mut vcf_header = BcfHeader::new();
@@ -1004,12 +964,12 @@ fn genotype_hets(input_bam: &str, region_str: &str, candidates_vcf: &str, refere
         let ref_support = ro0 + ro1;
         let alt_support = ao0 + ao1;
         let total_support = ref_support + alt_support;
-        let vaf = alt_support as f32 / total_support as f32;
+        //let vaf = alt_support as f32 / total_support as f32;
 
         let informative_fraction = total_support as f32 / total_reads as f32;
 
         // Make a conservative estimate of the error rate at this position using the context model
-        let mut test_vaf = 0.10;
+        let test_vaf = 0.10;
 
         /*
         let cm = &extract_fragment_parameters.context_model;
@@ -1049,12 +1009,12 @@ fn genotype_hets(input_bam: &str, region_str: &str, candidates_vcf: &str, refere
         let alt_lp = LogProb::from(Prob(binom_test_alt));
         record.push_info_float(b"LP", &[*ref_lp as f32, *alt_lp as f32]).expect("Could not add INFO");
         
+        /*
         let cm = &extract_fragment_parameters.context_model;
         let context_probs = &alignment_parameters.context_emission_probs.probs;
         let half_k = cm.k / 2;
         let model_ref_context = &chromosome_bytes[ (var.pos0 as usize - half_k)..(var.pos0 as usize + half_k + 1)];
         if cm.alphabet.is_word(model_ref_context) {
-            let ref_base_rank = cm.get_base_rank(reference_base) as usize;
             let alt_base_rank = cm.get_base_rank(alt_base) as usize;
 
             let model_ref_er_fwd = context_probs[ cm.get_context_rank(model_ref_context, false).unwrap() ][alt_base_rank];
@@ -1063,7 +1023,7 @@ fn genotype_hets(input_bam: &str, region_str: &str, candidates_vcf: &str, refere
             let context_ref_rev_er_str = format!("{}->{}:{:.3}", std::str::from_utf8(model_ref_context).unwrap(), alt_base, model_ref_er_ref);
             //println!("{} context model {} {}", var.pos0 + 1, context_ref_fwd_er_str, context_ref_rev_er_str);
         }
-
+        */
         let fishers_result = 
             fishers_exact(&[ ro0 as u32, ro1 as u32,
                              ao0 as u32, ao1 as u32 ]).unwrap();
@@ -1104,44 +1064,15 @@ fn genotype_hets(input_bam: &str, region_str: &str, candidates_vcf: &str, refere
 
 fn phase(input_bam: &str, region_str: &str, candidates_vcf: &str, reference_genome: &str) {
 
-    let ccf = CancerCellFraction { p_clonal: 0.75, subclonal_ccf: Beta::new(2.0, 2.0).unwrap() };
-    let params = ModelParameters { 
-        mutation_rate: 5.0 / 1000000.0, // per haplotype
-        heterozygosity: 1.0 / 2000.0, // per haplotype
-        ccf_dist: ccf,
-        depth_dist: None,
-        purity: 0.75,
-        error_rate: 0.02
-    };
-
-    let hom_snv_rate = LogProb::from(Prob(0.0005));
-    let het_snv_rate = LogProb::from(Prob(0.001));
-    let hom_indel_rate = LogProb::from(Prob(0.00005));
-    let het_indel_rate = LogProb::from(Prob(0.00001));
-    let ts_tv_ratio = 2.0 * 0.5; // from longshot defaults...
-
-    let genotype_priors = GenotypePriors::new(
-        hom_snv_rate,
-        het_snv_rate,
-        hom_indel_rate,
-        het_indel_rate,
-        ts_tv_ratio,
-    ).unwrap();
-
     let min_mapq = 50;
     let max_cigar_indel = 20;
     let min_allele_call_qual = LogProb::from(Prob(0.1));
     let hard_min_depth = 20;
     let min_informative_fraction = 0.75;
 
-    let max_variant_minor_observations = 2;
     let max_strand_bias = 10.0;
     let context_model = ContextModel::init(5);
     
-    let gt_hom_alt = [GenotypeAllele::Unphased(1), GenotypeAllele::Unphased(1)];
-    let gt_hom_ref = [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)];
-    let gt_het = [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(1)];
-    let gt_nocall = [GenotypeAllele::UnphasedMissing, GenotypeAllele::UnphasedMissing];
     
     let extract_fragment_parameters = ExtractFragmentParameters {
         min_mapq: min_mapq,
@@ -1177,7 +1108,6 @@ fn phase(input_bam: &str, region_str: &str, candidates_vcf: &str, reference_geno
     let chromosome_length = header_view.target_len(region.tid).unwrap() as usize;
     let mut chromosome_sequence = faidx.fetch_seq_string(&region.chrom, 0, chromosome_length).unwrap();
     chromosome_sequence.make_ascii_uppercase();
-    let chromosome_bytes = chromosome_sequence.as_bytes();
     
     // set up vcf output
     let mut vcf_header = BcfHeader::new();
@@ -1200,8 +1130,6 @@ fn phase(input_bam: &str, region_str: &str, candidates_vcf: &str, reference_geno
     vcf_header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths (high-quality bases)">"#.as_bytes());
     vcf_header.push_sample("sample".as_bytes());
 
-    let mut vcf = BcfWriter::from_stdout(&vcf_header, true, BcfFormat::Vcf).unwrap();
-    
     let all_vars = parse_vcf_potential_variants(&candidates_vcf.to_owned(), &input_bam.to_owned())
                         .expect("Could not parse candidate variants file");
     
@@ -1371,29 +1299,27 @@ fn phase(input_bam: &str, region_str: &str, candidates_vcf: &str, reference_geno
         // initialize empty haplotype
         let mut read_haplotype = vec!['-'; candidate_hets.len()];
 
-        if let Some( rm ) = read_meta.get(id) {
-            for c in &f.calls {
-                
-                if let Some(het_idx) = candidate_het_idx_map.get(&c.var_ix) {
-                    // if true then the current variant is a het, and we have the new idx for it
-
-                    let var = &varlist.lst[c.var_ix];
-                    let allele_call = var.alleles[c.allele as usize].clone();
-                    read_haplotype[*het_idx] = char::from_digit(c.allele as u32, 10).unwrap();
-                    /*
-                    println!("{}\t{}\t{}\t{}\t{}\t{}", &id, var.tid, var.pos0 + 1, var.alleles[0], var.alleles[1], c.allele);
+        for c in &f.calls {
             
-                    let rhl = ReadHaplotypeLikelihood { 
-                        read_name: Some(id.clone()),
-                        mutant_allele_likelihood: c.allele_scores[1],
-                        base_allele_likelihood: c.allele_scores[0],
-                        allele_call: var.alleles[c.allele as usize].clone(),
-                        allele_call_qual: c.qual,
-                        haplotype_index: rm.haplotype_index,
-                        strand_index: rm.strand_index
-                    };
-                    */
-                }
+            if let Some(het_idx) = candidate_het_idx_map.get(&c.var_ix) {
+                // if true then the current variant is a het, and we have the new idx for it
+
+                //let var = &varlist.lst[c.var_ix];
+                //let allele_call = var.alleles[c.allele as usize].clone();
+                read_haplotype[*het_idx] = char::from_digit(c.allele as u32, 10).unwrap();
+                /*
+                println!("{}\t{}\t{}\t{}\t{}\t{}", &id, var.tid, var.pos0 + 1, var.alleles[0], var.alleles[1], c.allele);
+        
+                let rhl = ReadHaplotypeLikelihood { 
+                    read_name: Some(id.clone()),
+                    mutant_allele_likelihood: c.allele_scores[1],
+                    base_allele_likelihood: c.allele_scores[0],
+                    allele_call: var.alleles[c.allele as usize].clone(),
+                    allele_call_qual: c.qual,
+                    haplotype_index: rm.haplotype_index,
+                    strand_index: rm.strand_index
+                };
+                */
             }
         }
 

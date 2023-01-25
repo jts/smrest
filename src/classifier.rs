@@ -3,72 +3,13 @@
 // Written by Jared Simpson (jared.simpson@oicr.on.ca)
 //---------------------------------------------------------
 
-use statrs::distribution::{Binomial, Discrete, Poisson, Beta, ContinuousCDF};
-use statrs::function::factorial;
+use statrs::distribution::{Binomial, Discrete, ContinuousCDF};
 use bio::stats::{Prob, LogProb};
-use logaddexp::LogSumExp;
 use cached::proc_macro::cached;
 use crate::longshot_realign::ReadHaplotypeLikelihood;
-
-// traits
-use statrs::statistics::{Min, Max};
-use rand::Rng;
+use crate::parameters::ModelParameters;
 
 static VERBOSE: bool = false;
-
-pub struct CancerCellFraction
-{
-    pub p_clonal: f64,
-    pub subclonal_ccf: Beta
-}
-
-impl CancerCellFraction {
-    pub fn subclonal_mean_ccf(&self) -> f64 {
-        return self.subclonal_ccf.shape_a() / (self.subclonal_ccf.shape_a() + self.subclonal_ccf.shape_b());
-    }
-}
-
-impl ::rand::distributions::Distribution<f64> for CancerCellFraction {
-    fn sample<R: Rng + ?Sized>(&self, r: &mut R) -> f64 {
-        let is_clonal = r.gen::<f64>() < self.p_clonal;
-        if is_clonal {
-            return 1.0;
-        } else {
-            return self.subclonal_ccf.sample(r);
-        }
-    }
-}
-
-impl Min<f64> for CancerCellFraction {
-    fn min(&self) -> f64 { return 0.0; }
-}
-
-impl Max<f64> for CancerCellFraction {
-    fn max(&self) -> f64 { return 1.0; }
-}
-
-impl ContinuousCDF<f64, f64> for CancerCellFraction {
-    fn cdf(&self, x: f64) -> f64 {
-        let mut p = 0.0;
-        
-        // TODO: better numerical tolerance
-        if x > 0.999 {
-            p = self.p_clonal;
-        }
-
-        p += (1.0 - self.p_clonal) * self.subclonal_ccf.cdf(x);
-        return p;
-    }
-}
-
-pub struct ModelParameters {
-    pub mutation_rate: f64,
-    pub heterozygosity: f64,
-    pub ccf_dist: CancerCellFraction,
-    pub depth_dist: Option<Poisson>, // only use for simulation
-    pub purity: f64,
-    pub error_rate: f64
-}
 
 pub fn calculate_class_probabilities_phased(alt_count: u64, ref_count: u64, params: &ModelParameters) -> [f64;3]
 {
@@ -199,8 +140,6 @@ fn binomial_test_onesided_greater_memoized(x: u64, n: u64, pi: u64) -> f64 {
     assert!(pi > 0);
     let p = pi as f64 / 10000.0;
     let bn = Binomial::new(p, n).unwrap();
-    let d = bn.pmf(x);
-
     let sum = (x..=n).map(|i| bn.pmf(i)).sum();
     return sum;
 }
