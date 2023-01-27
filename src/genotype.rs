@@ -19,8 +19,9 @@ pub fn genotype(input_bam: &str, region_str: &str, candidates_vcf: &str, referen
 
     // subprogram thresholds
     let hard_min_depth = 20;
-    let max_strand_bias = 10.0;
-    
+    let max_strand_bias = 20.0;
+    let min_genotype_qual = 20.0;
+
     let gt_hom_alt = [GenotypeAllele::Unphased(1), GenotypeAllele::Unphased(1)];
     let gt_hom_ref = [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)];
     let gt_het = [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(1)];
@@ -40,11 +41,9 @@ pub fn genotype(input_bam: &str, region_str: &str, candidates_vcf: &str, referen
 
     // add info lines
     vcf_header.push_record(r#"##INFO=<ID=TotalDepth,Number=1,Type=Integer,Description="Total number of reads aligned across this position">"#.as_bytes());
-    vcf_header.push_record(r#"##INFO=<ID=LP,Number=2,Type=Float,Description="todo">"#.as_bytes());
     vcf_header.push_record(r#"##INFO=<ID=GL,Number=3,Type=Float,Description="todo">"#.as_bytes());
-    vcf_header.push_record(r#"##INFO=<ID=EP,Number=1,Type=Float,Description="todo">"#.as_bytes());
     vcf_header.push_record(r#"##INFO=<ID=StrandBias,Number=1,Type=Float,Description="Strand bias p-value (PHRED scaled)">"#.as_bytes());
-    vcf_header.push_record(r#"##INFO=<ID=InformativeFraction,Number=1,Type=Float,Description="Proportion of reads that could be used in allele calling">"#.as_bytes());
+    vcf_header.push_record(r#"##INFO=<ID=StrandBiasCounts,Number=4,Type=Integer,Description="Strand bias read counts">"#.as_bytes());
     vcf_header.push_record(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="sample genotype">"#.as_bytes());
     vcf_header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths (high-quality bases)">"#.as_bytes());
     vcf_header.push_sample("sample".as_bytes());
@@ -197,15 +196,16 @@ pub fn genotype(input_bam: &str, region_str: &str, candidates_vcf: &str, referen
         let p_het_data = Prob::from(lp_t_het - lp_sum);
         let p_hom_alt_data = Prob::from(lp_t_hom_alt - lp_sum);
         
+        let max_gt_qual = 60.0;
         let gls = [ *PHREDProb::from(Prob(1.0 - *p_hom_ref_data)) as f32,
                     *PHREDProb::from(Prob(1.0 - *p_het_data)) as f32,
-                    *PHREDProb::from(Prob(1.0 - *p_hom_alt_data)) as f32 ];
+                    *PHREDProb::from(Prob(1.0 - *p_hom_alt_data)) as f32 ].map(|x| if x > max_gt_qual { max_gt_qual } else { x });
 
-        let mut max_val = 0.0;
+        let mut max_gt_qual = 0.0;
         let mut max_gt_idx = 0;
         for (idx, value) in gls.into_iter().enumerate() {
-            if value > max_val {
-                max_val = value;
+            if value > max_gt_qual {
+                max_gt_qual = value;
                 max_gt_idx = idx;
             }
         }
@@ -219,6 +219,8 @@ pub fn genotype(input_bam: &str, region_str: &str, candidates_vcf: &str, referen
         record.set_alleles(&[ var.alleles[0].as_bytes(), var.alleles[1].as_bytes() ]).expect("Could not set alleles");
         
         record.push_info_integer(b"TotalDepth", &[total_reads]).expect("Could not add INFO");
+
+        // convert the GL string to a nicer representation
         record.push_info_float(b"GL", &gls).expect("Could not add INFO");
         
         let fishers_result = 
@@ -234,6 +236,7 @@ pub fn genotype(input_bam: &str, region_str: &str, candidates_vcf: &str, referen
             500.0
         };
         record.push_info_float(b"StrandBias", &[strand_bias_pvalue as f32]).expect("Could not add INFO");
+        record.push_info_integer(b"StrandBiasCounts", &[ro0, ro1, ao0, ao1]).expect("Could not add INFO");
         
         let mut alleles = if max_gt_idx == 0 {
             &gt_hom_ref
@@ -243,7 +246,7 @@ pub fn genotype(input_bam: &str, region_str: &str, candidates_vcf: &str, referen
             &gt_hom_alt           
         };
         
-        if strand_bias_pvalue > max_strand_bias || total_support < hard_min_depth {
+        if strand_bias_pvalue > max_strand_bias || max_gt_qual < min_genotype_qual || total_support < hard_min_depth {
             alleles = &gt_nocall;
         }
         record.push_genotypes(alleles).unwrap();
