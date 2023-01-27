@@ -130,20 +130,6 @@ fn binomial_test_twosided_memoized(x: u64, n: u64, pi: u64) -> f64 {
     return sum;
 }
 
-pub fn binomial_test_onesided_greater(x: u64, n: u64, p: f64) -> f64 {
-    let pi = (p * 10000.0) as u64;
-    return binomial_test_onesided_greater_memoized(x, n, pi);
-}
-
-#[cached]
-fn binomial_test_onesided_greater_memoized(x: u64, n: u64, pi: u64) -> f64 {
-    assert!(pi > 0);
-    let p = pi as f64 / 10000.0;
-    let bn = Binomial::new(p, n).unwrap();
-    let sum = (x..=n).map(|i| bn.pmf(i)).sum();
-    return sum;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

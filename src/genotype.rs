@@ -8,8 +8,8 @@ use bio::stats::{Prob, LogProb, PHREDProb};
 use fishers_exact::fishers_exact;
 use crate::pileup_stats::*;
 use crate::utility::*;
-use crate::binomial_test_onesided_greater;
 use crate::LongshotParameters;
+use crate::ReadHaplotypeLikelihood;
 use longshot::extract_fragments::extract_fragments;
 use longshot::variants_and_fragments::parse_vcf_potential_variants;
 use longshot::variants_and_fragments::VarList;
@@ -18,9 +18,7 @@ use longshot::util::parse_region_string;
 pub fn genotype(input_bam: &str, region_str: &str, candidates_vcf: &str, reference_genome: &str) {
 
     // subprogram thresholds
-    let min_allele_call_qual = LogProb::from(Prob(0.1));
     let hard_min_depth = 20;
-    let min_informative_fraction = 0.75;
     let max_strand_bias = 10.0;
     
     let gt_hom_alt = [GenotypeAllele::Unphased(1), GenotypeAllele::Unphased(1)];
@@ -43,6 +41,7 @@ pub fn genotype(input_bam: &str, region_str: &str, candidates_vcf: &str, referen
     // add info lines
     vcf_header.push_record(r#"##INFO=<ID=TotalDepth,Number=1,Type=Integer,Description="Total number of reads aligned across this position">"#.as_bytes());
     vcf_header.push_record(r#"##INFO=<ID=LP,Number=2,Type=Float,Description="todo">"#.as_bytes());
+    vcf_header.push_record(r#"##INFO=<ID=GL,Number=3,Type=Float,Description="todo">"#.as_bytes());
     vcf_header.push_record(r#"##INFO=<ID=EP,Number=1,Type=Float,Description="todo">"#.as_bytes());
     vcf_header.push_record(r#"##INFO=<ID=StrandBias,Number=1,Type=Float,Description="Strand bias p-value (PHRED scaled)">"#.as_bytes());
     vcf_header.push_record(r#"##INFO=<ID=InformativeFraction,Number=1,Type=Float,Description="Proportion of reads that could be used in allele calling">"#.as_bytes());
@@ -71,6 +70,73 @@ pub fn genotype(input_bam: &str, region_str: &str, candidates_vcf: &str, referen
     // Convert fragments into read-haplotype likelihoods for every variant
     let rhl_per_var = fragments_to_read_haplotype_likelihoods(&varlist, &frags, &read_meta);
 
+    // priors
+    let var_rate = 0.001;
+    // rough prior that 2/3rds of variants are heterozygous
+    let p_het = var_rate * 2.0 / 3.0;
+    let p_hom_alt = var_rate - p_het;
+    let p_hom_ref = 1.0 - p_hom_alt - p_het;
+
+    /*
+
+    // estimate the maximum likelihood allele frequency of hets 
+    // calculate likelihood of het af
+    // L(af) = P(data|af)
+    //       = P(data| gt = 0/0, af) P(gt = 0/0) + P(data| gt = 0/1, af) P(gt = 0/1) + P(data| gt = 1/1, af) P(gt = 1/1)
+    let var_rate = 0.001;
+    let p_het = var_rate * 2.0 / 3.0;
+    let p_hom_alt = var_rate - p_het;
+    let p_hom_ref = 1.0 - p_hom_alt - p_het;
+
+    let mut ml = f64::NEG_INFINITY;
+    let mut ml_af = 0.0;
+
+    let bins = 50;
+    let step = 0.01;
+    for i in 0..bins {
+        let het_af = f64::from(i)*step;
+
+        let mut lp_total = 0.0;
+        for i in 0..varlist.lst.len() {
+
+            let var = &varlist.lst[i];
+            let rhls = &rhl_per_var[i];
+
+            if var.pos0 < region.start_pos as usize || var.pos0 > region.end_pos as usize {
+                continue;
+            }
+
+            let reference_base = var.alleles[0].as_bytes()[0] as char;
+            let alt_base = var.alleles[1].as_bytes()[0] as char;
+
+            if base2index(reference_base) == -1 || base2index(alt_base) == -1 {
+                continue;
+            }
+
+            let likelihoods = calculate_genotype_likelihoods(rhls, het_af);
+            let lp_data_hom_ref:f64 = likelihoods[0];
+            let lp_data_het:f64 = likelihoods[1];
+            let lp_data_hom_alt:f64 = likelihoods[2];
+            
+            let lp_t_hom_ref = LogProb(lp_data_hom_ref) + LogProb::from(Prob(p_hom_ref));
+            let lp_t_het = LogProb(lp_data_het) + LogProb::from(Prob(p_het));
+            let lp_t_hom_alt = LogProb(lp_data_hom_alt) + LogProb::from(Prob(p_hom_alt));
+
+            let lp_sum = LogProb::ln_sum_exp( &[ lp_t_hom_ref, lp_t_het, lp_t_hom_alt] );
+            lp_total += *lp_sum;
+        }
+
+        if lp_total > ml {
+            ml = lp_total;
+            ml_af = het_af;
+        }
+
+        //println!("{:.3}\t{:.3}\t{:.3}\t{:.3}", het_af, lp_total, ml_af, ml);
+    }
+    */
+
+    // call genotypes
+    let het_af = 0.25;
     for i in 0..varlist.lst.len() {
         let var = &varlist.lst[i];
         let rhls = &rhl_per_var[i];
@@ -97,15 +163,6 @@ pub fn genotype(input_bam: &str, region_str: &str, candidates_vcf: &str, referen
             total_reads += 1;
             let base = rhl.allele_call.chars().next().unwrap() as char;
 
-            /*
-            println!("{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}", 
-                rhl.read_name.as_ref().unwrap(), var.tid, var.pos0 + 1, var.alleles[0], var.alleles[1], base, *rhl.allele_call_qual, *min_allele_call_qual);
-            */
-
-            if rhl.allele_call_qual > min_allele_call_qual {
-                continue;
-            }
-
             if base != reference_base && base != alt_base {
                 continue;
             }
@@ -124,35 +181,35 @@ pub fn genotype(input_bam: &str, region_str: &str, candidates_vcf: &str, referen
         let alt_support = ao0 + ao1;
         let total_support = ref_support + alt_support;
         //let vaf = alt_support as f32 / total_support as f32;
-
-        let informative_fraction = total_support as f32 / total_reads as f32;
-
-        // Make a conservative estimate of the error rate at this position using the context model
-        let test_vaf = 0.10;
-
-        /*
-        let cm = &extract_fragment_parameters.context_model;
-        let context_probs = &alignment_parameters.context_emission_probs.probs;
-        let half_k = cm.k / 2;
-        let model_ref_context = &chromosome_bytes[ (var.pos0 as usize - half_k)..(var.pos0 as usize + half_k + 1)];
-        if cm.alphabet.is_word(model_ref_context) {
-            let ref_base_rank = cm.get_base_rank(reference_base) as usize;
-            let alt_base_rank = cm.get_base_rank(alt_base) as usize;
-
-            let model_ref_er_fwd = context_probs[ cm.get_context_rank(model_ref_context, false).unwrap() ][alt_base_rank];
-            let model_ref_er_rev = context_probs[ cm.get_context_rank(model_ref_context, true).unwrap() ][alt_base_rank];
-            error_rate = f64::max(model_ref_er_fwd, model_ref_er_rev);
-            //let context_ref_fwd_er_str = format!("{}+>{}:{:.3}", std::str::from_utf8(model_ref_context).unwrap(), alt_base, model_ref_er_fwd);
-            //let context_ref_rev_er_str = format!("{}->{}:{:.3}", std::str::from_utf8(model_ref_context).unwrap(), alt_base, model_ref_er_ref);
-            //println!("{} context model {} {}", var.pos0 + 1, context_ref_fwd_er_str, context_ref_rev_er_str);
-        }
-        */
-
-        // test whether there is sufficient evidence of ref/alt allele
-        // this computes a p-value that the vaf is greater than error_rate
-        let binom_test_alt = binomial_test_onesided_greater(alt_support, total_support, test_vaf);
-        let binom_test_ref = binomial_test_onesided_greater(ref_support, total_support, test_vaf);
         
+        // genotype model
+        let likelihoods = calculate_genotype_likelihoods(rhls, het_af);
+        let lp_data_hom_ref:f64 = likelihoods[0];
+        let lp_data_het:f64 = likelihoods[1];
+        let lp_data_hom_alt:f64 = likelihoods[2];
+        
+        let lp_t_hom_ref = LogProb(lp_data_hom_ref) + LogProb::from(Prob(p_hom_ref));
+        let lp_t_het = LogProb(lp_data_het) + LogProb::from(Prob(p_het));
+        let lp_t_hom_alt = LogProb(lp_data_hom_alt) + LogProb::from(Prob(p_hom_alt));
+        let lp_sum = LogProb::ln_sum_exp( &[ lp_t_hom_ref, lp_t_het, lp_t_hom_alt] );
+
+        let p_hom_ref_data = Prob::from(lp_t_hom_ref - lp_sum);
+        let p_het_data = Prob::from(lp_t_het - lp_sum);
+        let p_hom_alt_data = Prob::from(lp_t_hom_alt - lp_sum);
+        
+        let gls = [ *PHREDProb::from(Prob(1.0 - *p_hom_ref_data)) as f32,
+                    *PHREDProb::from(Prob(1.0 - *p_het_data)) as f32,
+                    *PHREDProb::from(Prob(1.0 - *p_hom_alt_data)) as f32 ];
+
+        let mut max_val = 0.0;
+        let mut max_gt_idx = 0;
+        for (idx, value) in gls.into_iter().enumerate() {
+            if value > max_val {
+                max_val = value;
+                max_gt_idx = idx;
+            }
+        }
+
         let mut record = vcf.empty_record();
         let rid = vcf.header().name2rid(region.chrom.as_bytes()).expect("Could not find reference id");
         record.set_rid(Some(rid));
@@ -162,27 +219,8 @@ pub fn genotype(input_bam: &str, region_str: &str, candidates_vcf: &str, referen
         record.set_alleles(&[ var.alleles[0].as_bytes(), var.alleles[1].as_bytes() ]).expect("Could not set alleles");
         
         record.push_info_integer(b"TotalDepth", &[total_reads]).expect("Could not add INFO");
+        record.push_info_float(b"GL", &gls).expect("Could not add INFO");
         
-        record.push_info_float(b"EP", &[test_vaf as f32]).expect("Could not add INFO");
-        let ref_lp = LogProb::from(Prob(binom_test_ref));
-        let alt_lp = LogProb::from(Prob(binom_test_alt));
-        record.push_info_float(b"LP", &[*ref_lp as f32, *alt_lp as f32]).expect("Could not add INFO");
-        
-        /*
-        let cm = &extract_fragment_parameters.context_model;
-        let context_probs = &alignment_parameters.context_emission_probs.probs;
-        let half_k = cm.k / 2;
-        let model_ref_context = &chromosome_bytes[ (var.pos0 as usize - half_k)..(var.pos0 as usize + half_k + 1)];
-        if cm.alphabet.is_word(model_ref_context) {
-            let alt_base_rank = cm.get_base_rank(alt_base) as usize;
-
-            let model_ref_er_fwd = context_probs[ cm.get_context_rank(model_ref_context, false).unwrap() ][alt_base_rank];
-            let model_ref_er_ref = context_probs[ cm.get_context_rank(model_ref_context, true).unwrap() ][alt_base_rank];
-            let context_ref_fwd_er_str = format!("{}+>{}:{:.3}", std::str::from_utf8(model_ref_context).unwrap(), alt_base, model_ref_er_fwd);
-            let context_ref_rev_er_str = format!("{}->{}:{:.3}", std::str::from_utf8(model_ref_context).unwrap(), alt_base, model_ref_er_ref);
-            //println!("{} context model {} {}", var.pos0 + 1, context_ref_fwd_er_str, context_ref_rev_er_str);
-        }
-        */
         let fishers_result = 
             fishers_exact(&[ ro0 as u32, ro1 as u32,
                              ao0 as u32, ao1 as u32 ]).unwrap();
@@ -196,22 +234,16 @@ pub fn genotype(input_bam: &str, region_str: &str, candidates_vcf: &str, referen
             500.0
         };
         record.push_info_float(b"StrandBias", &[strand_bias_pvalue as f32]).expect("Could not add INFO");
-        record.push_info_float(b"InformativeFraction", &[informative_fraction]).expect("Could not add INFO");
         
-        // absolute hack for development
-        let lp_threshold = LogProb::from(-2.0);
-
-        let has_ref_allele = ref_lp < lp_threshold;
-        let has_alt_allele = alt_lp < lp_threshold;
-        let mut alleles = if has_alt_allele && ! has_ref_allele {
-            &gt_hom_alt
-        } else if has_alt_allele && has_ref_allele {
+        let mut alleles = if max_gt_idx == 0 {
+            &gt_hom_ref
+        } else if max_gt_idx == 1 {
             &gt_het
         } else {
-            &gt_hom_ref
+            &gt_hom_alt           
         };
-
-        if strand_bias_pvalue > max_strand_bias || informative_fraction < min_informative_fraction || total_support < hard_min_depth {
+        
+        if strand_bias_pvalue > max_strand_bias || total_support < hard_min_depth {
             alleles = &gt_nocall;
         }
         record.push_genotypes(alleles).unwrap();
@@ -221,3 +253,38 @@ pub fn genotype(input_bam: &str, region_str: &str, candidates_vcf: &str, referen
     }
 }
 
+fn calculate_genotype_likelihoods(rhls: &Vec<ReadHaplotypeLikelihood>, het_af: f64) -> [f64;3] {
+    let lp_data_hom_ref:f64 = rhls.iter().map(|x| *x.base_allele_likelihood).sum();
+    let lp_data_hom_alt:f64 = rhls.iter().map(|x| *x.mutant_allele_likelihood).sum();
+
+    // P(data | gt = het) = sum over reads P(read | het)
+    let minor_hap_freq = Prob(het_af);
+    let major_hap_freq = Prob(1.0 - het_af);
+    let lp_minor_hap_freq = LogProb::from(minor_hap_freq);
+    let lp_major_hap_freq = LogProb::from(major_hap_freq);
+    let lp_half = LogProb::from(Prob(0.5));
+    let mut t1_sum = LogProb(0.0);
+    let mut t2_sum = LogProb(0.0);
+
+    for rhl in rhls {
+        assert!(rhl.allele_call.len() == 1);
+        
+        // we don't know which haplotype (if any) is amplified, so need to sum over
+        // both equally likely cases
+        let t1_h1 = rhl.base_allele_likelihood + lp_minor_hap_freq;
+        let t1_h2 = rhl.mutant_allele_likelihood + lp_major_hap_freq;
+        let t1 = LogProb::ln_add_exp(t1_h1, t1_h2);
+        t1_sum += t1;
+
+        let t2_h1 = rhl.base_allele_likelihood + lp_major_hap_freq;
+        let t2_h2 = rhl.mutant_allele_likelihood + lp_minor_hap_freq;
+        let t2 = LogProb::ln_add_exp(t2_h1, t2_h2);
+        t2_sum += t2;
+
+        //println!("\tread\t{}\tlp_allele [{:.3} {:.3}] lp_freq [{:.3} {:.3}] t1 [{:.3} {:.3} {:.3}] t2: [{:.3} {:.3} {:.3}]", 
+        //    base, *rhl.base_allele_likelihood, *rhl.mutant_allele_likelihood, *lp_minor_hap_freq, *lp_major_hap_freq, *t1_h1, *t1_h2, *t1, *t2_h1, *t2_h2, *t2);
+    }
+
+    let lp_data_het = *LogProb::ln_add_exp(t1_sum + lp_half, t2_sum + lp_half);
+    return [lp_data_hom_ref, lp_data_het, lp_data_hom_alt];
+}
