@@ -2,15 +2,19 @@
 // Copyright 2022 Ontario Institute for Cancer Research
 // Written by Jared Simpson (jared.simpson@oicr.on.ca)
 //---------------------------------------------------------
-use rust_htslib::{bam, bam::record::Aux};
+use rust_htslib::{bam, bcf, bam::record::Aux};
 use std::collections::{HashMap};
 use intervaltree::IntervalTree;
 use core::ops::Range;
 use crate::BcfHeader;
 use crate::{ReadHaplotypeLikelihood, ReadMetadata};
-use rust_htslib::bam::Read;
+use rust_htslib::bam::Read as BamRead;
+use rust_htslib::bcf::Read as BcfRead;
 use longshot::util::GenomicInterval;
-use longshot::variants_and_fragments::{Fragment, VarList};
+use longshot::variants_and_fragments::{Fragment, Var, VarList, VarFilter};
+use longshot::util::u8_to_string;
+use longshot::genotype_probs::{Genotype, GenotypeProbs};
+
 
 // A cache storing the haplotype tag for every read processed
 // We need this because bam_get_aux is O(N)
@@ -198,4 +202,88 @@ pub fn fragments_to_read_haplotype_likelihoods(varlist: &VarList,
         }
     }
     return rhl_per_var;
+}
+
+pub fn read_bcf(bcf_filename: &String,
+                region_opt: Option<GenomicInterval>) -> Vec<bcf::Record> {
+    let mut vec = Vec::new();
+    let mut bcf = bcf::IndexedReader::from_path(bcf_filename).expect("Error opening file.");
+
+    if let Some(region) = region_opt {
+        bcf.fetch( region.tid, region.start_pos as u64, Some(region.end_pos as u64) ).unwrap();
+    }
+
+    for record_result in bcf.records() {
+        let record = record_result.expect("Fail to read record");
+        vec.push(record);
+    }
+    return vec;
+}
+
+pub fn is_genotype_het(record: &bcf::Record) -> bool {
+    let gts = record.genotypes().expect("Error reading genotypes");
+    
+    // ensure a single sample genotype field
+    let sample_count = usize::try_from(record.sample_count()).unwrap();
+    assert!(sample_count == 1);
+
+    let mut n_ref = 0;
+    let mut n_alt = 0;
+
+    for gta in gts.get(0).iter() {
+        match gta.index() {
+            Some(0) => n_ref += 1, 
+            Some(1) => n_alt += 1,
+            _ => (),
+        }
+    }
+
+    return n_ref == 1 && n_alt == 1;
+}
+
+// convert a bcf::Record into longshot's internal format 
+pub fn bcf2longshot(record: &bcf::Record, bam_header: &bam::HeaderView) -> Var {
+
+    // this is all derived from longshot's variants_and_fragments.rs
+    let rid = record.rid().expect("Could not find variant rid");
+    let chrom = record.header().rid2name(rid).expect("Could not find rid in header");
+    
+    let mut alleles: Vec<String> = vec![];
+    for a in record.alleles().iter() {
+        let s = u8_to_string(a).expect("Could not convert allele to string");
+        alleles.push(s);
+    }
+
+    Var {
+        ix: 0,
+        tid: bam_header.tid(chrom).expect("Could not find chromosome in bam header") as u32,
+        pos0: record.pos() as usize,
+        alleles: alleles.clone(),
+        dp: 0,
+        allele_counts: vec![0; alleles.len()],
+        allele_counts_forward: vec![0; alleles.len()],
+        allele_counts_reverse: vec![0; alleles.len()],
+        ambiguous_count: 0,
+        qual: 0.0,
+        filter: VarFilter::Pass,
+        genotype: Genotype(0, 0),
+        //unphased: false,
+        gq: 0.0,
+        unphased_genotype: Genotype(0, 0),
+        unphased_gq: 0.0,
+        genotype_post: GenotypeProbs::uniform(alleles.len()),
+        phase_set: None,
+        strand_bias_pvalue: 1.0,
+        mec: 0,
+        mec_frac_variant: 0.0, // mec fraction for this variant
+        mec_frac_block: 0.0,   // mec fraction for this haplotype block
+        mean_allele_qual: 0.0,
+        dp_any_mq: 0,
+        mq10_frac: 0.0,
+        mq20_frac: 0.0,
+        mq30_frac: 0.0,
+        mq40_frac: 0.0,
+        mq50_frac: 0.0
+    }
+    
 }
