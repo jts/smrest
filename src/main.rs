@@ -32,6 +32,9 @@ use crate::genotype::*;
 mod haplotype_qc;
 use crate::haplotype_qc::*;
 
+mod select_reads;
+use crate::select_reads::*;
+
 mod somatic_call;
 use crate::somatic_call::*;
 
@@ -157,6 +160,34 @@ fn main() {
                     .required(true)
                     .index(1)
                     .help("the input bam file to process")))
+        .subcommand(SubCommand::with_name("select-reads")
+                .about("subset a bam file to reads that are informative for phasing")
+                .arg(Arg::with_name("genome")
+                    .short('g')
+                    .long("genome")
+                    .takes_value(true)
+                    .help("the reference genome"))
+                .arg(Arg::with_name("region")
+                    .short('r')
+                    .long("region")
+                    .takes_value(true)
+                    .help("the reference region to call"))
+                .arg(Arg::with_name("vcf")
+                    .short('c')
+                    .long("vcf")
+                    .takes_value(true)
+                    .required(true)
+                    .help("vcf file containing heterozygous variants for phasing"))
+                .arg(Arg::with_name("output-bam")
+                    .short('o')
+                    .long("output-bam")
+                    .takes_value(true)
+                    .required(true)
+                    .help("the output bam file to write to"))
+                .arg(Arg::with_name("input-bam")
+                    .required(true)
+                    .index(1)
+                    .help("the input bam file to process")))
         .subcommand(SubCommand::with_name("phase")
                 .about("phase heterozygous variants")
                 .arg(Arg::with_name("genome")
@@ -256,6 +287,12 @@ fn main() {
         haplotype_qc(matches.value_of("input-bam").unwrap(),
                      matches.value_of("region").unwrap(),
                      matches.value_of("phased-vcf").unwrap(),
+                     matches.value_of("genome").unwrap())
+    } else if let Some(matches) = matches.subcommand_matches("select-reads") {
+        select_reads(matches.value_of("input-bam").unwrap(),
+                     matches.value_of("output-bam").unwrap(),
+                     matches.value_of("region").unwrap(),
+                     matches.value_of("vcf").unwrap(),
                      matches.value_of("genome").unwrap())
     } else if let Some(matches) = matches.subcommand_matches("phase") {
         phase(matches.value_of("input-bam").unwrap(),
