@@ -23,7 +23,9 @@ pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, m
 
     // somatic calling specific parameters
     let max_softclip = 500;
-    let max_num_softclip_reads = 5;
+    let max_tail_mismatch_rate = 0.05;
+    let max_alignment_artifact_evidence_proportion = 0.25;
+
     let soft_min_p_somatic = 1e-6;
     let hard_min_p_somatic = 1e-10;
     let min_allele_call_qual = LogProb::from(Prob(0.1));
@@ -55,7 +57,7 @@ pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, m
 
     // add info lines
     vcf_header.push_record(r#"##INFO=<ID=SomaticHaplotypeIndex,Number=1,Type=Integer,Description="Index of haplotype carrying the mutation">"#.as_bytes());
-    vcf_header.push_record(r#"##INFO=<ID=SoftClippedEvidenceReads,Number=1,Type=Integer,Description="Number of evidence reads that have long softclips">"#.as_bytes());
+    vcf_header.push_record(r#"##INFO=<ID=AlignmentArtifactEvidenceReads,Number=1,Type=Integer,Description="Number of evidence reads that have long softclips or excessive mismatches">"#.as_bytes());
     vcf_header.push_record(r#"##INFO=<ID=HaplotypeAltCount,Number=2,Type=Integer,Description="Observed alt read count on each haplotype">"#.as_bytes());
     vcf_header.push_record(r#"##INFO=<ID=HaplotypeDepth,Number=2,Type=Integer,Description="Observed read count on each haplotype">"#.as_bytes());
     vcf_header.push_record(r#"##INFO=<ID=HaplotypeVAF,Number=2,Type=Float,Description="VAF on each haplotype">"#.as_bytes());
@@ -69,7 +71,7 @@ pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, m
     vcf_header.push_record(br#"##FILTER=<ID=LowQual,Description="todo">"#);
     vcf_header.push_record(br#"##FILTER=<ID=MaxOtherHaplotypeObservations,Description="todo">"#);
     vcf_header.push_record(br#"##FILTER=<ID=StrandBias,Description="todo">"#);
-    vcf_header.push_record(br#"##FILTER=<ID=ExcessiveSoftClips,Description="todo">"#);
+    vcf_header.push_record(br#"##FILTER=<ID=PossibleAlignmentArtifact,Description="todo">"#);
     vcf_header.push_record(br#"##FILTER=<ID=MinHaplotypeDepth,Description="todo">"#);
 
     //vcf_header.push_sample("sample".as_bytes());
@@ -108,7 +110,7 @@ pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, m
                                   &longshot_parameters.alignment_parameters.as_ref().unwrap()).unwrap();
     
     // Populate haplotype, strand information and another other information we need from the bam
-    let read_meta = populate_read_metadata_from_bam(&mut bam, &region);
+    let read_meta = populate_read_metadata_from_bam(&mut bam, &region, Some(&chromosome_bytes));
 
     // Convert fragments into read-haplotype likelihoods for every variant
     let rhl_per_var = fragments_to_read_haplotype_likelihoods(&varlist, &frags, &read_meta);
@@ -170,7 +172,8 @@ pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, m
         }
 
         // Check for the evidence reads having excessively long softclips, which can indicate alignment artifacts
-        let mut num_softclipped_evidence_reads = 0;
+        let mut num_alignment_artifact_evidence_reads = 0;
+        let mut num_evidence_reads_with_metadata = 0;
         let mut phase_sets = Vec::new();
 
         for rhl in rhls_by_hap {
@@ -181,8 +184,13 @@ pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, m
             // lookup read metadata and check softclip lengths
             let id = rhl.read_name.unwrap();
             if let Some( rm ) = read_meta.get(&id) {
-                if rm.leading_softclips >= max_softclip || rm.trailing_softclips >= max_softclip {
-                    num_softclipped_evidence_reads += 1
+                num_evidence_reads_with_metadata += 1;
+                let has_long_softclip = rm.leading_softclips >= max_softclip || rm.trailing_softclips >= max_softclip;
+                let has_suspect_alignment_end = rm.prefix_mismatch_rate.unwrap_or(0.0) >= max_tail_mismatch_rate || 
+                                                rm.suffix_mismatch_rate.unwrap_or(0.0) >= max_tail_mismatch_rate;
+
+                if has_long_softclip || has_suspect_alignment_end {
+                    num_alignment_artifact_evidence_reads += 1
                 }
 
                 if let Some( phase_set) = rm.phase_set {
@@ -191,9 +199,10 @@ pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, m
             }
         }
 
-        record.push_info_integer(b"SoftClippedEvidenceReads", &[num_softclipped_evidence_reads as i32]).expect("Could not add INFO");
-        if num_softclipped_evidence_reads > max_num_softclip_reads {
-            record.push_filter("ExcessiveSoftClips".as_bytes()).unwrap();
+        let artifact_evidence_proportion = num_alignment_artifact_evidence_reads as f32 / num_evidence_reads_with_metadata as f32;
+        record.push_info_integer(b"AlignmentArtifactEvidenceReads", &[num_alignment_artifact_evidence_reads as i32]).expect("Could not add INFO");
+        if artifact_evidence_proportion > max_alignment_artifact_evidence_proportion {
+            record.push_filter("PossibleAlignmentArtifact".as_bytes()).unwrap();
         }
 
         if phase_sets.len() > 0 {

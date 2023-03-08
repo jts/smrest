@@ -56,7 +56,7 @@ pub fn haplotype_qc(input_bam: &str, region_str: &str, phased_vcf: &str, referen
                                   &longshot_parameters.alignment_parameters.as_ref().unwrap()).unwrap();
     
     // populate read metadata
-    let read_meta = populate_read_metadata_from_bam(&mut bam, &region);
+    let read_meta = populate_read_metadata_from_bam(&mut bam, &region, None);
 
     // Convert fragments into read-haplotype likelihoods for every variant
     let rhl_per_var = fragments_to_read_haplotype_likelihoods(&varlist, &frags, &read_meta);

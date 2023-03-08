@@ -19,5 +19,7 @@ pub struct ReadMetadata
     pub phase_set: Option<i32>,
     pub strand_index: i32,
     pub leading_softclips: i64,
-    pub trailing_softclips: i64
+    pub trailing_softclips: i64,
+    pub prefix_mismatch_rate: Option<f64>,
+    pub suffix_mismatch_rate: Option<f64>
 }

@@ -3,6 +3,7 @@
 // Written by Jared Simpson (jared.simpson@oicr.on.ca)
 //---------------------------------------------------------
 use rust_htslib::{bam, bcf, bam::record::Aux};
+use rust_htslib::bam::ext::BamRecordExtensions;
 use std::collections::{HashMap};
 use intervaltree::IntervalTree;
 use core::ops::Range;
@@ -141,9 +142,45 @@ pub fn get_chromosome_sequence(reference_genome: &str,
     return chromosome_sequence;
 }
 
+// calculate the error rate of the read sequence over the first n_read_bases of the sequence
+pub fn calculate_mismatch_rate_until<'a, I>(iter: I, 
+                                         read_seq: &rust_htslib::bam::record::Seq,
+                                         ref_seq: &Vec<u8>,
+                                         n_read_bases: usize) -> f64 
+where
+    I: Iterator<Item = &'a [Option<i64>; 2]>
+{
+
+    let mut base_count = 0;
+    let mut error_count = 0;
+
+    for i in iter {
+
+        if let Some(read_pos) = i[0] {
+            if let Some(ref_pos) = i[1] {
+                let read_base = read_seq[read_pos as usize];
+                let ref_base = ref_seq[ref_pos as usize];
+
+                base_count += 1;
+                if read_base != ref_base {
+                    error_count += 1;
+                }
+            }
+
+
+            if base_count == n_read_bases {
+                break;
+            }
+        }
+    }
+
+    error_count as f64 / base_count as f64
+}
+
 // iterate over the bam, storing information we need in a hash table
 pub fn populate_read_metadata_from_bam(bam: &mut rust_htslib::bam::IndexedReader,
-                                       region: &GenomicInterval) -> HashMap::<String, ReadMetadata> {
+                                       region: &GenomicInterval,
+                                       chromosome_bytes: Option<&Vec<u8>>) -> HashMap::<String, ReadMetadata> {
     bam.fetch( (region.tid, region.start_pos, region.end_pos + 1) ).unwrap();
     let mut read_meta = HashMap::<String, ReadMetadata>::new();
     for r in bam.records() {
@@ -161,12 +198,31 @@ pub fn populate_read_metadata_from_bam(bam: &mut rust_htslib::bam::IndexedReader
         }
 
         let s = String::from_utf8(record.qname().to_vec()).unwrap();
+        let (prefix, suffix) = if let Some(ref_seq) = chromosome_bytes {
+
+            let ap: Vec<[Option<i64>; 2]> = record.aligned_pairs_full().collect();
+            let prefix_mmr = calculate_mismatch_rate_until(ap.iter(), 
+                                                       &record.seq(),
+                                                       chromosome_bytes.unwrap(),
+                                                       500);
+            let suffix_mmr = calculate_mismatch_rate_until(ap.iter().rev(), 
+                                                       &record.seq(),
+                                                       chromosome_bytes.unwrap(),
+                                                       500);
+            //println!("{}\t{}\t{}\n", s, prefix_mmr, suffix_mmr);
+            (Some(prefix_mmr), Some(suffix_mmr))
+        } else {
+            (None, None)
+        };
+
         let rm = ReadMetadata { 
             haplotype_index: get_haplotag_from_record(&record),
             phase_set: get_phase_set_from_record(&record),
             strand_index: record.is_reverse() as i32,
             leading_softclips: record.cigar().leading_softclips(),
-            trailing_softclips: record.cigar().trailing_softclips()
+            trailing_softclips: record.cigar().trailing_softclips(),
+            prefix_mismatch_rate: prefix,
+            suffix_mismatch_rate: suffix
         };
         read_meta.insert(s.clone(), rm);
     }
@@ -184,6 +240,13 @@ pub fn fragments_to_read_haplotype_likelihoods(varlist: &VarList,
         let id = f.id.as_ref().unwrap();
 
         if let Some( rm ) = read_meta.get(id) {
+            /*
+            if rm.prefix_mismatch_rate.unwrap_or(0.0) >= max_mismatch_rate ||
+               rm.suffix_mismatch_rate.unwrap_or(0.0) >= max_mismatch_rate 
+            {
+                continue;
+            }
+            */
             for c in &f.calls {
                 let var = &varlist.lst[c.var_ix];
                 //println!("{}\t{}\t{}\t{}\t{}\t{}", &id, var.tid, var.pos0 + 1, var.alleles[0], var.alleles[1], c.allele);
