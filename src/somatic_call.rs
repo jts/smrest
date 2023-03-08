@@ -6,6 +6,7 @@ use rust_htslib::{bam, bam::Read};
 use rust_htslib::bcf::{Writer as BcfWriter, Header as BcfHeader, Format as BcfFormat};
 use bio::stats::{Prob, LogProb, PHREDProb};
 use fishers_exact::fishers_exact;
+use std::collections::HashMap;
 
 use crate::pileup_stats::*;
 use crate::calling_models::*;
@@ -17,7 +18,124 @@ use crate::ModelParameters;
 
 use longshot::extract_fragments::extract_fragments;
 use longshot::util::parse_region_string;
-use longshot::call_potential_snvs::call_potential_snvs;
+use longshot::util::GenomicInterval;
+use longshot::genotype_probs::{Genotype, GenotypeProbs};
+use longshot::variants_and_fragments::{Var, VarList, VarFilter};
+
+pub fn find_candidates(bam_file: &String,
+                       interval: &GenomicInterval,
+                       chromosome_bytes: &Vec<u8>,
+                       min_haplotype_depth: u32,
+                       max_total_depth: u32,
+                       min_alt_count: usize,
+                       min_alt_frac: f64,
+                       _min_mapq: u8) -> VarList
+{
+    let mut bam = bam::IndexedReader::from_path(bam_file).unwrap();
+
+    let mut cache = ReadHaplotypeCache { cache: HashMap::new() };
+    let mut ps = PileupStats::new();
+    
+    let mut varvec = vec![];
+
+    // go to calling region
+    bam.fetch( (interval.tid as u32, interval.start_pos, interval.end_pos + 1) ).unwrap();
+
+    for p in bam.pileup() {
+        let pileup = p.unwrap();
+        
+        // check whether we should bother with this position
+        let reference_position = pileup.pos() as usize;
+
+        if reference_position < interval.start_pos as usize || reference_position > interval.end_pos as usize {
+            continue;
+        }
+
+        let reference_base = chromosome_bytes[reference_position] as char;
+        if reference_base == 'N' {
+            continue;
+        }
+
+        ps.fill_pileup(&mut cache, pileup.alignments());
+        if ps.get_haplotype_depth(0) < min_haplotype_depth || ps.get_haplotype_depth(1) < min_haplotype_depth {
+            continue;
+        }
+
+        if ps.get_haplotype_depth(0) + ps.get_haplotype_depth(1) > max_total_depth {
+            continue;
+        }
+
+        let reference_base_index = base2index(reference_base) as u32;
+
+        // Calculate most frequently observed non-reference base on either haplotype
+        let mut max_variant_count = 0;
+        let mut max_variant_index = 0;
+        let mut max_haplotype_index = 0;
+
+        for hi in 0u32..2u32 {
+            for bi in 0u32..4u32 {
+                let b0 = ps.get(bi, hi, 0);
+                let b1 = ps.get(bi, hi, 1);
+                if bi != reference_base_index && (b0 + b1) > max_variant_count {
+                    max_variant_count = b0 + b1;
+                    max_variant_index = bi;
+                    max_haplotype_index = hi;
+                }
+            }
+        }
+
+        let alt_frac = max_variant_count as f64 / ps.get_haplotype_depth(max_haplotype_index) as f64;
+        if alt_frac >= min_alt_frac && alt_frac <= (1.0 - min_alt_frac) && max_variant_count >= min_alt_count as u32 {
+            let bases = "ACGT";
+            let variant_base = bases.as_bytes()[max_variant_index as usize] as char;
+
+            let mut alleles = vec![];
+            let ref_allele = std::str::from_utf8(&[reference_base as u8]).unwrap().to_owned();
+            let alt_allele = std::str::from_utf8(&[variant_base as u8]).unwrap().to_owned();
+            alleles.push(ref_allele);
+            alleles.push(alt_allele);
+
+            let v = Var {
+                ix: 0,
+                tid: interval.tid,
+                pos0: reference_position,
+                alleles: alleles.clone(),
+                dp: 0,
+                allele_counts: vec![0; alleles.len()],
+                allele_counts_forward: vec![0; alleles.len()],
+                allele_counts_reverse: vec![0; alleles.len()],
+                ambiguous_count: 0,
+                qual: 0.0,
+                filter: VarFilter::Pass,
+                genotype: Genotype(0, 0),
+                //unphased: false,
+                gq: 0.0,
+                unphased_genotype: Genotype(0, 0),
+                unphased_gq: 0.0,
+                genotype_post: GenotypeProbs::uniform(alleles.len()),
+                phase_set: None,
+                strand_bias_pvalue: 1.0,
+                mec: 0,
+                mec_frac_variant: 0.0, // mec fraction for this variant
+                mec_frac_block: 0.0,   // mec fraction for this haplotype block
+                mean_allele_qual: 0.0,
+                dp_any_mq: 0,
+                mq10_frac: 0.0,
+                mq20_frac: 0.0,
+                mq30_frac: 0.0,
+                mq40_frac: 0.0,
+                mq50_frac: 0.0
+            };
+            varvec.push(v);
+        }
+    }
+    
+    let target_names = bam.header().target_names().iter().map(|x| std::str::from_utf8(x).unwrap().to_owned()).collect();
+    let vlst = VarList::new(varvec, target_names).unwrap();
+    vlst.assert_sorted();
+
+    return vlst;
+}
 
 pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, model: CallingModel) {
 
@@ -77,6 +195,15 @@ pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, m
     //vcf_header.push_sample("sample".as_bytes());
     let mut vcf = BcfWriter::from_stdout(&vcf_header, true, BcfFormat::Vcf).unwrap();
 
+    let mut varlist = find_candidates(&input_bam.to_owned(),
+                                      &region,
+                                      &chromosome_bytes,
+                                      hard_min_depth,
+                                      400,
+                                      min_variant_observations,
+                                      0.05,
+                                      60);
+/*
     let mut varlist = call_potential_snvs(
             &input_bam.to_owned(),
             &reference_genome.to_owned(),
@@ -90,7 +217,7 @@ pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, m
             longshot_parameters.alignment_parameters.as_ref().unwrap().ln(),
             LogProb::from(Prob(0.000000000001)),
             ).expect("Could not find candidate variants");
-
+*/
     for var in &mut varlist.lst {
         //println!("{}\t{}\t{}\t{}\t{}", var.tid, var.pos0 + 1, var.alleles.len(), var.alleles[0], var.alleles[1]);
         if var.alleles.len() > 2 {

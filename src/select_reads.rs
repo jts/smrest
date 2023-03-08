@@ -2,19 +2,14 @@
 // Copyright 2023 Ontario Institute for Cancer Research
 // Written by Jared Simpson (jared.simpson@oicr.on.ca)
 //---------------------------------------------------------
-use core::ops::Range;
-use std::collections::{HashMap, BTreeSet};
+use std::collections::{BTreeSet};
 use rust_htslib::{bam, bcf, bam::Read};
 use rust_htslib::bam::ext::BamRecordExtensions;
 use crate::utility::*;
-use crate::LongshotParameters;
-use longshot::extract_fragments::extract_fragments;
-use longshot::variants_and_fragments::VarList;
-use longshot::util::parse_region_string;
 
-pub fn select_reads(input_bam: &str, output_bam: &str, region_str: &str, vcf: &str, reference_genome: &str) {
+pub fn select_reads(input_bam: &str, output_bam: &str, _region_str: &str, vcf: &str, _reference_genome: &str) {
 
-    let region = parse_region_string(Some(region_str), &input_bam.to_owned()).expect("Could not parse region").unwrap();
+    //let region = parse_region_string(Some(region_str), &input_bam.to_owned()).expect("Could not parse region").unwrap();
     let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
     let header_view = bam.header().clone();
     let bcf_records: Vec<bcf::Record> = read_bcf(&vcf.to_owned(), None)
@@ -44,7 +39,7 @@ pub fn select_reads(input_bam: &str, output_bam: &str, region_str: &str, vcf: &s
 
     let min_hets_spanned = 3;
 
-    bam.fetch(bam::FetchDefinition::All);
+    bam.fetch(bam::FetchDefinition::All).unwrap();
     for r in bam.records() {
         let record = r.unwrap();
 
@@ -52,13 +47,13 @@ pub fn select_reads(input_bam: &str, output_bam: &str, region_str: &str, vcf: &s
             continue;
         }
 
-        let qname = std::str::from_utf8(record.qname()).unwrap();
+        //let qname = std::str::from_utf8(record.qname()).unwrap();
         let start_position = record.pos() as usize;
         let end_position = record.reference_end() as usize;
 
         let hets_spanned = chromosome_hets[record.tid() as usize].range( start_position..end_position );
         let n_hets = hets_spanned.count();
-        let contig = String::from_utf8_lossy(header_view.tid2name(record.tid() as u32));
+        //let contig = String::from_utf8_lossy(header_view.tid2name(record.tid() as u32));
         if n_hets >= min_hets_spanned {
             /*println!("{}\t{}\t{}\t{}\t{}", 
                 qname, contig, start_position, end_position, n_hets);

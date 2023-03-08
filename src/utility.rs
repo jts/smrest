@@ -198,7 +198,7 @@ pub fn populate_read_metadata_from_bam(bam: &mut rust_htslib::bam::IndexedReader
         }
 
         let s = String::from_utf8(record.qname().to_vec()).unwrap();
-        let (prefix, suffix) = if let Some(ref_seq) = chromosome_bytes {
+        let (prefix, suffix) = if let Some(_ref_seq) = chromosome_bytes {
 
             let ap: Vec<[Option<i64>; 2]> = record.aligned_pairs_full().collect();
             let prefix_mmr = calculate_mismatch_rate_until(ap.iter(), 
