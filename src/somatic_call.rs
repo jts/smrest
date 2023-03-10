@@ -7,6 +7,9 @@ use rust_htslib::bcf::{Writer as BcfWriter, Header as BcfHeader, Format as BcfFo
 use bio::stats::{Prob, LogProb, PHREDProb};
 use fishers_exact::fishers_exact;
 use std::collections::HashMap;
+use std::ops::Range;
+use std::fs::File;
+use std::io::Write;
 
 use crate::pileup_stats::*;
 use crate::calling_models::*;
@@ -29,14 +32,15 @@ pub fn find_candidates(bam_file: &String,
                        max_total_depth: u32,
                        min_alt_count: usize,
                        min_alt_frac: f64,
-                       _min_mapq: u8) -> VarList
+                       _min_mapq: u8) -> (VarList, Vec<Range<usize>>)
 {
     let mut bam = bam::IndexedReader::from_path(bam_file).unwrap();
 
     let mut cache = ReadHaplotypeCache { cache: HashMap::new() };
     let mut ps = PileupStats::new();
     
-    let mut varvec = vec![];
+    let mut var_vec = vec![];
+    let mut callable_region_vec = vec![];
 
     // go to calling region
     bam.fetch( (interval.tid as u32, interval.start_pos, interval.end_pos + 1) ).unwrap();
@@ -63,6 +67,19 @@ pub fn find_candidates(bam_file: &String,
 
         if ps.get_haplotype_depth(0) + ps.get_haplotype_depth(1) > max_total_depth {
             continue;
+        }
+
+        // This position passes the checks for a callable region, manage all the interval wranging
+        if callable_region_vec.is_empty() {
+            callable_region_vec.push( Range { start: reference_position, end: reference_position } );
+        } else {
+            let mut current = callable_region_vec.last_mut().unwrap();
+            if current.end + 1 != reference_position {
+                callable_region_vec.push( Range { start: reference_position, end: reference_position } );
+            } else {
+                // extend previous interval
+                current.end = reference_position;
+            }
         }
 
         let reference_base_index = base2index(reference_base) as u32;
@@ -126,18 +143,18 @@ pub fn find_candidates(bam_file: &String,
                 mq40_frac: 0.0,
                 mq50_frac: 0.0
             };
-            varvec.push(v);
+            var_vec.push(v);
         }
     }
     
     let target_names = bam.header().target_names().iter().map(|x| std::str::from_utf8(x).unwrap().to_owned()).collect();
-    let vlst = VarList::new(varvec, target_names).unwrap();
+    let vlst = VarList::new(var_vec, target_names).unwrap();
     vlst.assert_sorted();
 
-    return vlst;
+    return (vlst, callable_region_vec);
 }
 
-pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, model: CallingModel) {
+pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, output_bed: Option<&str>, model: CallingModel) {
 
     // somatic calling specific parameters
     let max_softclip = 500;
@@ -195,14 +212,14 @@ pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, m
     //vcf_header.push_sample("sample".as_bytes());
     let mut vcf = BcfWriter::from_stdout(&vcf_header, true, BcfFormat::Vcf).unwrap();
 
-    let mut varlist = find_candidates(&input_bam.to_owned(),
-                                      &region,
-                                      &chromosome_bytes,
-                                      hard_min_depth,
-                                      400,
-                                      min_variant_observations,
-                                      0.05,
-                                      60);
+    let (mut varlist, callable_regions) = find_candidates(&input_bam.to_owned(),
+                                                          &region,
+                                                          &chromosome_bytes,
+                                                          hard_min_depth,
+                                                          400,
+                                                          min_variant_observations,
+                                                          0.05,
+                                                          60);
 /*
     let mut varlist = call_potential_snvs(
             &input_bam.to_owned(),
@@ -438,6 +455,15 @@ pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, m
         }
 
         vcf.write(&record).unwrap();
+    }
+
+    // write callable regions
+    if let Some(filename) = output_bed {
+        let mut file = File::create(filename).expect("Unable to open file for write");
+        for r in callable_regions {
+            let out = format!("{}\t{}\t{}\n", region.chrom, r.start, r.end + 1);
+            file.write_all(out.as_bytes()).expect("Unable to write to file");
+        }
     }
 }
 

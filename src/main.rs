@@ -222,6 +222,11 @@ fn main() {
                     .long("region")
                     .takes_value(true)
                     .help("the reference region to call"))
+                .arg(Arg::with_name("output-region-bed")
+                    .short('o')
+                    .long("output-region-bed")
+                    .takes_value(true)
+                    .help("write the regions that had sufficient phased depth to be callable to this .bed file"))
                 .arg(Arg::with_name("model")
                     .short('m')
                     .long("model")
@@ -274,9 +279,11 @@ fn main() {
     } else if let Some(matches) = matches.subcommand_matches("call") {
         let model_str = matches.value_of("model").unwrap_or("haplotype-likelihood");
         let model = str_to_calling_model(model_str).expect("unknown calling model");
+
         somatic_call(matches.value_of("input-bam").unwrap(),
                      matches.value_of("region").unwrap(),
                      matches.value_of("genome").unwrap(),
+                     matches.value_of("output-region-bed"),
                      model)
     } else if let Some(matches) = matches.subcommand_matches("genotype-hets") {
         genotype(matches.value_of("input-bam").unwrap(),
