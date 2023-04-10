@@ -24,6 +24,7 @@ use longshot::util::parse_region_string;
 use longshot::util::GenomicInterval;
 use longshot::genotype_probs::{Genotype, GenotypeProbs};
 use longshot::variants_and_fragments::{Var, VarList, VarFilter};
+use longshot::realignment::AlignmentType;
 
 pub fn find_candidates(bam_file: &String,
                        interval: &GenomicInterval,
@@ -175,6 +176,7 @@ pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, o
     let params = ModelParameters::defaults();
     let mut longshot_parameters = LongshotParameters::defaults();
     longshot_parameters.estimate_alignment_parameters(&input_bam.to_owned(), &reference_genome.to_owned(), &None);
+    longshot_parameters.extract_fragment_parameters.alignment_type = AlignmentType::HtsLibProbAln;
 
     let region = parse_region_string(Some(region_str), &input_bam.to_owned()).expect("Could not parse region").unwrap();
     
