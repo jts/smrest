@@ -29,17 +29,28 @@ def get_calling_windows(win_size_mb):
 #
 # Genotype gnomad SNPs
 #
+rule get_on_target_gnomad:
+    output:
+        "resources/genotype_sites.vcf"
+    params:
+        memory_per_thread="4G",
+        extra_cluster_opt=""
+    threads: 1
+    shell:
+        "bcftools filter -R {config[giab_hc_bed]} {config[gnomad_common]} > {output}"
+
 rule genotype_regions:
     input:
         bam="data/{sample}.bam",
-        bai="data/{sample}.bam.bai"
+        bai="data/{sample}.bam.bai",
+        vcf="resources/genotype_sites.vcf"
     params:
         memory_per_thread="32G",
         extra_cluster_opt=""
     output:
         "smrest_genotype/{sample}/per_region/{sample}.region.{region}.gnomad_genotype.vcf"
     shell:
-        "{config[smrest]} genotype-hets -c {config[gnomad_common]} -r {wildcards.region} -g {config[reference]} {input.bam} > {output}"
+        "{config[smrest]} genotype-hets -c {input.vcf} -r {wildcards.region} -g {config[reference]} {input.bam} > {output}"
 
 rule merge_region_genotype:
     input:
@@ -128,7 +139,7 @@ rule haplotag_bam:
         memory_per_thread="4G",
         extra_cluster_opt=""
     shell:
-        "../longphase/longphase haplotag --log -t 8 -s {input.vcf} -b {input.bam} -o haplotag/{wildcards.sample}/{wildcards.sample}.gnomad_genotype.whatshap_phased.tagged"
+        "../longphase/longphase haplotag --log -m 2 -p 0.85 -t 8 -s {input.vcf} -b {input.bam} -o haplotag/{wildcards.sample}/{wildcards.sample}.gnomad_genotype.whatshap_phased.tagged"
 
 def get_fai(wildcards):
     return config['reference'] + ".fai"
