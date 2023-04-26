@@ -104,7 +104,7 @@ pub fn find_candidates(bam_file: &String,
         }
 
         let alt_frac = max_variant_count as f64 / ps.get_haplotype_depth(max_haplotype_index) as f64;
-        if alt_frac >= min_alt_frac && alt_frac <= (1.0 - min_alt_frac) && max_variant_count >= min_alt_count as u32 {
+        if alt_frac >= min_alt_frac && max_variant_count >= min_alt_count as u32 {
             let bases = "ACGT";
             let variant_base = bases.as_bytes()[max_variant_index as usize] as char;
 
