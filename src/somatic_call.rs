@@ -15,6 +15,7 @@ use crate::pileup_stats::*;
 use crate::calling_models::*;
 use crate::utility::*;
 use crate::classifier::*;
+use crate::ReadMetadata;
 
 use crate::LongshotParameters;
 use crate::ModelParameters;
@@ -29,6 +30,7 @@ use longshot::realignment::AlignmentType;
 pub fn find_candidates(bam_file: &String,
                        interval: &GenomicInterval,
                        chromosome_bytes: &Vec<u8>,
+                       read_metadata: &HashMap::<String, ReadMetadata>,
                        min_haplotype_depth: u32,
                        max_total_depth: u32,
                        min_alt_count: usize,
@@ -37,7 +39,6 @@ pub fn find_candidates(bam_file: &String,
 {
     let mut bam = bam::IndexedReader::from_path(bam_file).unwrap();
 
-    let mut cache = ReadHaplotypeCache { cache: HashMap::new() };
     let mut ps = PileupStats::new();
     
     let mut var_vec = vec![];
@@ -61,7 +62,7 @@ pub fn find_candidates(bam_file: &String,
             continue;
         }
 
-        ps.fill_pileup(&mut cache, pileup.alignments());
+        ps.fill_pileup(&read_metadata, pileup.alignments());
         if ps.get_haplotype_depth(0) < min_haplotype_depth || ps.get_haplotype_depth(1) < min_haplotype_depth {
             continue;
         }
@@ -155,7 +156,12 @@ pub fn find_candidates(bam_file: &String,
     return (vlst, callable_region_vec);
 }
 
-pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, output_bed: Option<&str>, model: CallingModel) {
+pub fn somatic_call(input_bam: &str, 
+                    region_str: &str, 
+                    reference_genome: &str, 
+                    output_bed: Option<&str>, 
+                    phased_vcf: Option<&str>,
+                    model: CallingModel) {
 
     // somatic calling specific parameters
     let max_softclip = 500;
@@ -214,9 +220,20 @@ pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, o
     //vcf_header.push_sample("sample".as_bytes());
     let mut vcf = BcfWriter::from_stdout(&vcf_header, true, BcfFormat::Vcf).unwrap();
 
+    // Populate haplotype, strand information and another other information we need from the bam
+    let read_metadata = populate_read_metadata_from_bam(&input_bam.to_owned(), 
+                                                        &region, 
+                                                        Some(&chromosome_bytes), 
+                                                        phased_vcf, 
+                                                        Some(&longshot_parameters), 
+                                                        Some(&reference_genome.to_owned()));
+
+
+    //
     let (mut varlist, callable_regions) = find_candidates(&input_bam.to_owned(),
                                                           &region,
                                                           &chromosome_bytes,
+                                                          &read_metadata,
                                                           hard_min_depth,
                                                           400,
                                                           min_variant_observations,
@@ -255,11 +272,9 @@ pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, o
                                   &longshot_parameters.extract_fragment_parameters,
                                   &longshot_parameters.alignment_parameters.as_ref().unwrap()).unwrap();
     
-    // Populate haplotype, strand information and another other information we need from the bam
-    let read_meta = populate_read_metadata_from_bam(&mut bam, &region, Some(&chromosome_bytes));
 
     // Convert fragments into read-haplotype likelihoods for every variant
-    let rhl_per_var = fragments_to_read_haplotype_likelihoods(&varlist, &frags, &read_meta);
+    let rhl_per_var = fragments_to_read_haplotype_likelihoods(&varlist, &frags, &read_metadata);
 
     let cm = &longshot_parameters.extract_fragment_parameters.context_model;
     let context_probs = &longshot_parameters.alignment_parameters.as_ref().unwrap().context_emission_probs.probs;
@@ -329,7 +344,7 @@ pub fn somatic_call(input_bam: &str, region_str: &str, reference_genome: &str, o
 
             // lookup read metadata and check softclip lengths
             let id = rhl.read_name.unwrap();
-            if let Some( rm ) = read_meta.get(&id) {
+            if let Some( rm ) = read_metadata.get(&id) {
                 num_evidence_reads_with_metadata += 1;
                 let has_long_softclip = rm.leading_softclips >= max_softclip || rm.trailing_softclips >= max_softclip;
                 let has_suspect_alignment_end = rm.prefix_mismatch_rate.unwrap_or(0.0) >= max_tail_mismatch_rate || 

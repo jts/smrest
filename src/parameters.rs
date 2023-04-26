@@ -76,7 +76,7 @@ pub struct ModelParameters {
 
 impl ModelParameters {
     pub fn defaults() -> ModelParameters {
-        let ccf = CancerCellFraction { p_clonal: 0.75, subclonal_ccf: Beta::new(2.0, 2.0).unwrap() };
+        let ccf = CancerCellFraction { p_clonal: 0.95, subclonal_ccf: Beta::new(2.0, 2.0).unwrap() };
         ModelParameters { 
             mutation_rate: 5.0 / 1000000.0, // per haplotype
             heterozygosity: 1.0 / 2000.0, // per haplotype

@@ -222,6 +222,11 @@ fn main() {
                     .long("region")
                     .takes_value(true)
                     .help("the reference region to call"))
+                .arg(Arg::with_name("phased-vcf")
+                    .short('p')
+                    .long("phased-vcf")
+                    .takes_value(true)
+                    .help("use the SNPs in this VCF file to infer the haplotype of each read"))
                 .arg(Arg::with_name("output-region-bed")
                     .short('o')
                     .long("output-region-bed")
@@ -284,6 +289,7 @@ fn main() {
                      matches.value_of("region").unwrap(),
                      matches.value_of("genome").unwrap(),
                      matches.value_of("output-region-bed"),
+                     matches.value_of("phased-vcf"),
                      model)
     } else if let Some(matches) = matches.subcommand_matches("genotype-hets") {
         genotype(matches.value_of("input-bam").unwrap(),
@@ -338,7 +344,7 @@ fn main() {
 }
 
 fn extract_mutations(input_bam: &str, reference_genome: &str, min_depth: u32, region_opt: Option<&str>) {
-
+    /*
     let params = ModelParameters::defaults();
         
     let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
@@ -360,6 +366,11 @@ fn extract_mutations(input_bam: &str, reference_genome: &str, min_depth: u32, re
 
     let tid = header_view.tid(chromosome_name.as_bytes()).unwrap();
     let chromosome_bytes = get_chromosome_sequence(reference_genome, header_view, tid).into_bytes();
+    
+    let read_metadata = populate_read_metadata_from_bam(&input_bam.to_owned(), 
+                                                        &region,
+                                                        Some(&chromosome_bytes), 
+                                                        None, None, None); 
 
     let mut cache = ReadHaplotypeCache { cache: HashMap::new() };
     let mut ps = PileupStats::new();
@@ -458,6 +469,7 @@ fn extract_mutations(input_bam: &str, reference_genome: &str, min_depth: u32, re
                       class_probs[0], class_probs[1], class_probs[2]);
         }
     }
+    */
 }
 
 fn phase(input_bam: &str, region_str: &str, candidates_vcf: &str, reference_genome: &str) {
@@ -489,7 +501,7 @@ fn phase(input_bam: &str, region_str: &str, candidates_vcf: &str, reference_geno
                                   &longshot_parameters.alignment_parameters.as_ref().unwrap()).unwrap();
     
     // populate read metadata
-    let read_meta = populate_read_metadata_from_bam(&mut bam, &region, None);
+    let read_meta = populate_read_metadata_from_bam(&input_bam.to_owned(), &region, None, None, None, None);
 
     // Convert fragments into read-haplotype likelihoods for every variant
     let rhl_per_var = fragments_to_read_haplotype_likelihoods(&varlist, &frags, &read_meta);

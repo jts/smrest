@@ -5,6 +5,8 @@
 use crate::utility::ReadHaplotypeCache;
 use crate::ReadHaplotypeLikelihood;
 use crate::LogProb;
+use crate::ReadMetadata;
+use crate::HashMap;
 
 pub struct PileupStats
 {
@@ -118,7 +120,7 @@ impl PileupStats {
         self.proportion_phased = phased_reads / total_reads;
     }
 
-    pub fn fill_pileup(& mut self, cache: &mut ReadHaplotypeCache, alignments: rust_htslib::bam::pileup::Alignments<'_>) -> () {
+    pub fn fill_pileup(& mut self, read_metadata: &HashMap::<String, ReadMetadata>, alignments: rust_htslib::bam::pileup::Alignments<'_>) -> () {
         self.clear();
         let mut sum_mapq: f32 = 0.0;
         let mut phased_reads: f32 = 0.0;
@@ -131,15 +133,18 @@ impl PileupStats {
             total_reads += 1.0;
 
             if let Some(qpos) = a.qpos() {
-                if let Some(mut hi) = cache.get(&a.record()) {
-                    let read_base = a.record().seq()[qpos] as char;
-                    hi -= 1; // phasing programs annotate with 1/2, we use 0/1
-                    let bi = base2index(read_base) as u32;
-                    let si = a.record().is_reverse() as u32;
-                    self.increment(bi, hi as u32, si);
-                    sum_mapq += a.record().mapq() as f32;
-                    phased_reads += 1.0;
-                    //println!("\t{read_base}\t{bi}\t{hi}\t{si}\t{}", *ps.get(bi, hi as u32, si));
+                let id = String::from_utf8(a.record().qname().to_vec()).unwrap();
+                if let Some(rm) = read_metadata.get(&id) {
+                    if let Some(mut hi) = rm.haplotype_index {
+                        let read_base = a.record().seq()[qpos] as char;
+                        hi -= 1; // phasing programs annotate with 1/2, we use 0/1
+                        let bi = base2index(read_base) as u32;
+                        let si = a.record().is_reverse() as u32;
+                        self.increment(bi, hi as u32, si);
+                        sum_mapq += a.record().mapq() as f32;
+                        phased_reads += 1.0;
+                        //println!("\t{read_base}\t{bi}\t{hi}\t{si}\t{}", *ps.get(bi, hi as u32, si));
+                    }
                 }
             }
         }

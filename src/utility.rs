@@ -7,15 +7,18 @@ use rust_htslib::bam::ext::BamRecordExtensions;
 use std::collections::{HashMap};
 use intervaltree::IntervalTree;
 use core::ops::Range;
+use bio::stats::{Prob, LogProb, PHREDProb};
 use crate::BcfHeader;
 use crate::{ReadHaplotypeLikelihood, ReadMetadata};
+use crate::LongshotParameters;
+use crate::utility::bcf::record::GenotypeAllele::Phased;
 use rust_htslib::bam::Read as BamRead;
 use rust_htslib::bcf::Read as BcfRead;
 use longshot::util::GenomicInterval;
 use longshot::variants_and_fragments::{Fragment, Var, VarList, VarFilter};
 use longshot::util::u8_to_string;
 use longshot::genotype_probs::{Genotype, GenotypeProbs};
-
+use longshot::extract_fragments::extract_fragments;
 
 // A cache storing the haplotype tag for every read processed
 // We need this because bam_get_aux is O(N)
@@ -177,10 +180,108 @@ where
     error_count as f64 / base_count as f64
 }
 
+pub fn assign_reads_to_haplotypes(input_bam: &String,
+                                  region: &GenomicInterval,
+                                  reference_genome: &String,
+                                  phased_vcf: &str,
+                                  longshot_parameters: &LongshotParameters) -> HashMap::<String, i32> {
+
+    let mut haplotype_assignments = HashMap::<String, i32>::new();
+    let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
+    bam.fetch( (region.tid, region.start_pos, region.end_pos + 1) ).unwrap();
+    let header_view = bam.header();
+
+    let bcf_records: Vec<bcf::Record> = read_vcf(&phased_vcf.to_owned())
+                                           .into_iter().filter(|x| is_phased(x)).collect();
+
+    // convert to longshot var here
+    let all_vars = bcf_records.iter().map(|x| bcf2longshot(x, header_view)).collect();
+
+    let target_names = header_view.target_names().iter().map(|x| std::str::from_utf8(x).unwrap().to_owned()).collect();
+    let mut varlist = VarList::new(all_vars, target_names).expect("Could not construct var list");
+    
+    let frags = extract_fragments(&input_bam.to_owned(),
+                                  &reference_genome.to_owned(),
+                                  &mut varlist,
+                                  &Some(region.clone()),
+                                  &longshot_parameters.extract_fragment_parameters,
+                                  &longshot_parameters.alignment_parameters.as_ref().unwrap()).unwrap();
+    
+    for f in frags {
+        let id = f.id.as_ref().unwrap();
+
+        let mut h0_likelihood = LogProb::ln_one();
+        let mut h1_likelihood = LogProb::ln_one();
+
+        let mut h0_match = 0;
+        let mut h1_match = 0;
+
+        for c in &f.calls {
+            let var = &varlist.lst[c.var_ix];
+            let h0_idx = bcf_records[c.var_ix].genotypes().expect("Error reading genotypes").get(0)[0].index().unwrap() as usize;
+            assert!(h0_idx == 0 || h0_idx == 1);
+
+            h0_likelihood += c.allele_scores[h0_idx];
+            h1_likelihood += c.allele_scores[1 - h0_idx];
+
+            h0_match += (h0_idx == c.allele as usize) as u32;
+            h1_match += ( (1 - h0_idx) == c.allele as usize) as u32;
+
+            //println!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", &id, var.tid, var.pos0 + 1, var.alleles[0], var.alleles[1], c.allele, h0_idx, *c.allele_scores[h0_idx], *c.allele_scores[1 - h0_idx]);
+        }
+
+        let lp_sum = LogProb::ln_add_exp(h0_likelihood, h1_likelihood);
+
+        let (htag, lp_assignment, max_match) = 
+            if h0_match == 0 && h1_match == 0 {
+                (None, LogProb::from(Prob(0.0)), 0)
+            } else if h0_likelihood > h1_likelihood {
+                (Some(1), h0_likelihood - lp_sum, h0_match)
+            } else {
+                (Some(2), h1_likelihood - lp_sum, h1_match)
+            };
+
+        // cap phasing qual at 60
+        let lp_wrong = lp_assignment.ln_one_minus_exp();
+        let qual = if *lp_wrong > -13.0 { 
+            PHREDProb::from(lp_wrong)
+        } else {
+            PHREDProb(60.0)
+        };
+
+        let min_agreement = 0.9;
+        let agreement = max_match as f64 / (h0_match + h1_match) as f64;
+
+        let mut qc = "FAIL";
+        let min_qual = 20.0;
+        if htag.is_some() && *qual > min_qual && agreement > min_agreement {
+           haplotype_assignments.insert(id.clone(), htag.unwrap());
+           qc = "PASS";
+        }
+
+        //println!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", &id, *h0_likelihood, *h1_likelihood, h0_match, h1_match, agreement, htag.unwrap_or(-1), *qual, qc);
+    }
+
+    return haplotype_assignments;
+}
+
 // iterate over the bam, storing information we need in a hash table
-pub fn populate_read_metadata_from_bam(bam: &mut rust_htslib::bam::IndexedReader,
+pub fn populate_read_metadata_from_bam(input_bam: &String,
                                        region: &GenomicInterval,
-                                       chromosome_bytes: Option<&Vec<u8>>) -> HashMap::<String, ReadMetadata> {
+                                       chromosome_bytes: Option<&Vec<u8>>,
+                                       phased_vcf: Option<&str>,
+                                       longshot_parameters: Option<&LongshotParameters>,
+                                       reference_genome: Option<&String>) -> HashMap::<String, ReadMetadata> {
+    
+    // if a phased VCF file is passed in we use it to re-compute the haplotype assignments
+    // for each read. Otherwise this is read from the HP tag of the bam. 
+    let haplotype_assignments = if let Some(f) = phased_vcf {
+        Some(assign_reads_to_haplotypes(input_bam, region, reference_genome.unwrap(), f, longshot_parameters.unwrap()))
+    } else {
+        None
+    };
+
+    let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
     bam.fetch( (region.tid, region.start_pos, region.end_pos + 1) ).unwrap();
     let mut read_meta = HashMap::<String, ReadMetadata>::new();
     for r in bam.records() {
@@ -215,8 +316,14 @@ pub fn populate_read_metadata_from_bam(bam: &mut rust_htslib::bam::IndexedReader
             (None, None)
         };
 
+        let hi = if haplotype_assignments.is_some() {
+            haplotype_assignments.as_ref().unwrap().get(&s).cloned()
+        } else {
+            get_haplotag_from_record(&record)
+        };
+
         let rm = ReadMetadata { 
-            haplotype_index: get_haplotag_from_record(&record),
+            haplotype_index: hi,
             phase_set: get_phase_set_from_record(&record),
             strand_index: record.is_reverse() as i32,
             leading_softclips: record.cigar().leading_softclips(),
@@ -283,6 +390,18 @@ pub fn read_bcf(bcf_filename: &String,
     return vec;
 }
 
+pub fn read_vcf(vcf_filename: &String) -> Vec<bcf::Record> {
+    let mut vec = Vec::new();
+    let mut bcf = bcf::Reader::from_path(vcf_filename).expect("Error opening file.");
+
+    for record_result in bcf.records() {
+        let record = record_result.expect("Fail to read record");
+        vec.push(record);
+    }
+    return vec;
+}
+
+
 pub fn is_genotype_het(record: &bcf::Record) -> bool {
     let gts = record.genotypes().expect("Error reading genotypes");
     
@@ -303,6 +422,28 @@ pub fn is_genotype_het(record: &bcf::Record) -> bool {
 
     return n_ref == 1 && n_alt == 1;
 }
+
+pub fn is_phased(record: &bcf::Record) -> bool {
+    let gts = record.genotypes().expect("Error reading genotypes");
+    
+    // ensure a single sample genotype field
+    let sample_count = usize::try_from(record.sample_count()).unwrap();
+    assert!(sample_count == 1);
+
+    let mut n_ref = 0;
+    let mut n_alt = 0;
+
+    let mut is_phased = false;
+    for gta in gts.get(0).iter() {
+        match gta {
+            Phased(_) => is_phased = true,
+            _ => (),
+        }
+    }
+
+    return is_phased;
+}
+
 
 // convert a bcf::Record into longshot's internal format 
 pub fn bcf2longshot(record: &bcf::Record, bam_header: &bam::HeaderView) -> Var {

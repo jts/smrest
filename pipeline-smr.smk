@@ -139,7 +139,7 @@ rule haplotag_bam:
         memory_per_thread="4G",
         extra_cluster_opt=""
     shell:
-        "../longphase/longphase haplotag --log -m 2 -p 0.85 -t 8 -s {input.vcf} -b {input.bam} -o haplotag/{wildcards.sample}/{wildcards.sample}.gnomad_genotype.whatshap_phased.tagged"
+        "../longphase/longphase haplotag --log -m 1 -p 0.85 -t 8 -s {input.vcf} -b {input.bam} -o haplotag/{wildcards.sample}/{wildcards.sample}.gnomad_genotype.whatshap_phased.tagged"
 
 def get_fai(wildcards):
     return config['reference'] + ".fai"
@@ -155,10 +155,26 @@ rule call_regions:
         memory_per_thread="24G",
         extra_cluster_opt=""
     output:
+        vcf="smrest_calls_phased_bam/{sample}/per_region/{sample}.whatshap_phased.region.{region}.vcf",
+        bed="smrest_calls_phased_bam/{sample}/per_region/{sample}.whatshap_phased.region.{region}.bed"
+    shell:
+        "{config[smrest]} call -m haplotype-likelihood -r {wildcards.region} -g {config[reference]} -o {output.bed} {input.bam} > {output.vcf}"
+
+rule call_regions_internal_tag:
+    input:
+        #bam="haplotag/{sample}/{sample}.gnomad_genotype.whatshap_phased.tagged.bam",
+        #bai="haplotag/{sample}/{sample}.gnomad_genotype.whatshap_phased.tagged.bam.bai"
+        bam="data/{sample}.bam",
+        bai="data/{sample}.bam.bai",
+        phased_vcf="phasing/{sample}/{sample}.gnomad_genotype.whatshap_phased.vcf"
+    params:
+        memory_per_thread="24G",
+        extra_cluster_opt=""
+    output:
         vcf="smrest_calls/{sample}/per_region/{sample}.whatshap_phased.region.{region}.vcf",
         bed="smrest_calls/{sample}/per_region/{sample}.whatshap_phased.region.{region}.bed"
     shell:
-        "{config[smrest]} call -m haplotype-likelihood -r {wildcards.region} -g {config[reference]} -o {output.bed} {input.bam} > {output.vcf}"
+        "{config[smrest]} call -m haplotype-likelihood -r {wildcards.region} -g {config[reference]} -p {input.phased_vcf} -o {output.bed} {input.bam} > {output.vcf}"
 
 rule merge_region_calls:
     input:

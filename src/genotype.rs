@@ -64,7 +64,7 @@ pub fn genotype(input_bam: &str, region_str: &str, candidates_vcf: &str, referen
                                   &longshot_parameters.alignment_parameters.as_ref().unwrap()).unwrap();
     
     // populate read metadata
-    let read_meta = populate_read_metadata_from_bam(&mut bam, &region, None);
+    let read_meta = populate_read_metadata_from_bam(&input_bam.to_owned(), &region, None, None, None, None);
 
     // Convert fragments into read-haplotype likelihoods for every variant
     let rhl_per_var = fragments_to_read_haplotype_likelihoods(&varlist, &frags, &read_meta);
