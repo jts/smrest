@@ -125,9 +125,9 @@ impl LongshotParameters {
             context_model: context_model,
             band_width: 20,
             anchor_length: 6,
-            variant_cluster_max_size: 3,
+            variant_cluster_max_size: 5,
             max_window_padding: 50,
-            max_cigar_indel: 20,
+            max_cigar_indel: 5,
             store_read_id: true
         };
 

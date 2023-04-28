@@ -237,7 +237,7 @@ pub fn somatic_call(input_bam: &str,
                                                           hard_min_depth,
                                                           400,
                                                           min_variant_observations,
-                                                          0.05,
+                                                          0.1,
                                                           60);
 /*
     let mut varlist = call_potential_snvs(
