@@ -27,6 +27,15 @@ def get_calling_windows(win_size_mb):
     return windows
 
 #
+# top level rule, based on sample names defined in config/command line
+#
+#rule all:
+#    input:
+#        expand("smrest_calls/{sample}/{sample}.whatshap_phased.called_regions.bed", sample=config['samples']),
+#        expand("smrest_calls/{sample}/{sample}.whatshap_phased.calls.vcf", sample=config['samples'])
+
+
+#
 # Genotype gnomad SNPs
 #
 rule get_on_target_gnomad:
@@ -197,46 +206,6 @@ rule merge_region_bed:
         extra_cluster_opt=""
     shell:
         "cat {input.beds} > {output}"
-
-
-#
-# Sequenza CNV calling
-#
-rule sequenza_gc:
-    output:
-        "reference_gc50.wig.gz"
-    threads: 1
-    params:
-        memory_per_thread="8G",
-        extra_cluster_opt=""
-    shell:
-        "sequenza-utils gc_wiggle -w 50 --fasta {config[reference]} -o {output}"
-
-rule sequenza_preprocess_seqz:
-    input:
-        tumor_bam="data/{sample}.bam",
-        normal_bam="data/cliveome.part1.all.bam",
-        gc="reference_gc50.wig.gz"
-    output:
-        "sequenza/{sample}/{sample}.seqz.gz"
-    threads: 1
-    params:
-        memory_per_thread="8G",
-        extra_cluster_opt=""
-    shell:
-        "sequenza-utils bam2seqz -n {input.normal_bam} -t {input.tumor_bam} --fasta {config[reference]} -gc {input.gc} -o {output}"
-    
-rule sequenza_preprocess_bin:
-    input:
-        "sequenza/{sample}/{sample}.seqz.gz"
-    output:
-        "sequenza/{sample}/{sample}.bin50.seqz.gz"
-    threads: 1
-    params:
-        memory_per_thread="32G",
-        extra_cluster_opt=""
-    shell:
-        "sequenza-utils seqz_binning --seqz {input} -w 50 -o {output}"
 
 rule index_bam:
     input:

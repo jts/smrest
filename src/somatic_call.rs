@@ -172,9 +172,10 @@ pub fn somatic_call(input_bam: &str,
     let hard_min_p_somatic = 1e-10;
     let min_allele_call_qual = LogProb::from(Prob(0.1));
     let hard_min_depth = 10;
-    let filter_min_depth = 10;
+    let filter_min_depth = hard_min_depth as i32;
 
     let max_variant_minor_observations = 2;
+    let max_variant_minor_hvaf = 0.2;
     let max_strand_bias = 20.0;
     let min_variant_observations = 3;
     let min_variant_observations_per_strand = 1;
@@ -387,17 +388,19 @@ pub fn somatic_call(input_bam: &str,
         let h1_depth = ps.get_haplotype_depth(1) as i32;
         
         let ho_ac = ps.get_count_on_haplotype(candidate_variant_index, (1 - candidate_haplotype_index) as u32) as i32;
-        if ho_ac > max_variant_minor_observations {
-            record.push_filter("MaxOtherHaplotypeObservations".as_bytes()).unwrap();
-        }
 
         record.push_info_integer(b"HaplotypeAltCount", &[h0_ac, h1_ac]).expect("Could not add INFO");
         record.push_info_integer(b"HaplotypeDepth", &[h0_depth, h1_depth]).expect("Could not add INFO");
 
         let h0_vaf = h0_ac as f32 / h0_depth as f32;
         let h1_vaf = h1_ac as f32 / h1_depth as f32;
+        let ho_vaf = if candidate_haplotype_index == 0 { h1_vaf } else { h0_vaf };
+
         record.push_info_float(b"HaplotypeVAF", &[h0_vaf, h1_vaf]).expect("Could not add INFO");
         
+        if ho_ac > max_variant_minor_observations || ho_vaf > max_variant_minor_hvaf {
+            record.push_filter("MaxOtherHaplotypeObservations".as_bytes()).unwrap();
+        }
 
         if h0_depth < filter_min_depth || h1_depth < filter_min_depth {
             record.push_filter("MinHaplotypeDepth".as_bytes()).unwrap();
