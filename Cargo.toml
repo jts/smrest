@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 rust-htslib = "*"
-clap = "*"
+clap = "3.2.21"
 bio = "0.25.0"
 itertools = "*"
 rand = "0.8.5"

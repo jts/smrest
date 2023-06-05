@@ -3,6 +3,7 @@
 // Written by Jared Simpson (jared.simpson@oicr.on.ca)
 //---------------------------------------------------------
 use rust_htslib::{faidx};
+use bio::stats::{Prob, LogProb, PHREDProb};
 use statrs::distribution::{Binomial};
 use std::fs::File;
 use std::io::Write;
@@ -129,19 +130,30 @@ impl SimulationStats {
     }
 }
 
+pub fn calculate_qual_from_prob(p: f64) -> f64
+{
+    let q = *PHREDProb::from(Prob(1.0 - p));
+    if q >= 500.0 { 500.0 } else { q.abs() }
+}
+
 pub fn sim_pileup(params: &ModelParameters, reference_genome: &str, per_site_output: bool, mutation_output_filename: &str)
 {
     let mut rng = rand::thread_rng();
 
     // get genome sequence
-    let chromosome_name = String::from("chr20");
+    let chromosome_name = String::from("chr2");
     //let chromosome_length = 60000000;
-    let chromosome_length = 10000000;
+    let chromosome_length = 100000000;
 
     let faidx = faidx::Reader::from_path(reference_genome).expect("Could not read reference genome:");
     let mut chromosome_sequence = faidx.fetch_seq_string(chromosome_name.as_str(), 0, chromosome_length).unwrap();
     chromosome_sequence.make_ascii_uppercase();
-    let chromosome_bytes = chromosome_sequence.as_bytes();
+    let mut rng = rand::thread_rng();
+    
+    // replace Ns with As
+    let alphabet = [ 'A' as u8, 'C' as u8, 'G' as u8, 'T' as u8 ].to_vec();
+    let chromosome_bytes: Vec<u8> = chromosome_sequence.into_bytes().into_iter().map(|x| { if alphabet.contains(&x) { x } else { 'A' as u8 } } ).collect();
+
     let mut germline_haplotypes = [ chromosome_bytes.to_vec(), chromosome_bytes.to_vec() ];
     mutate_haplotypes(& mut germline_haplotypes, params.heterozygosity);
     
@@ -151,13 +163,13 @@ pub fn sim_pileup(params: &ModelParameters, reference_genome: &str, per_site_out
     // structs to collect results
     let mut phased_model_stats = SimulationStats::new("phased".to_string());
     let mut unphased_model_stats = SimulationStats::new("unphased".to_string());
-    let mut sgz_model_stats = SimulationStats::new("sgz".to_string());
+    //let mut sgz_model_stats = SimulationStats::new("sgz".to_string());
 
     let mut mutation_out = MutationOutput::new(mutation_output_filename);
 
     // Finally, simulate some pileup data at each position on each haplotype
     if per_site_output {
-        println!("model\tposition\thaplotype\tclass\tis_het\tis_somatic\tref_count\talt_count\thvaf\tp_ref\tp_het\tp_somatic");
+        println!("model\tposition\thaplotype\tclass\tis_het\tis_somatic\tref_count\talt_count\thvaf\tp_ref\tp_het\tp_somatic\tsomatic_qual");
     }
 
     for j in 0..chromosome_length {
@@ -237,8 +249,8 @@ pub fn sim_pileup(params: &ModelParameters, reference_genome: &str, per_site_out
                 }
 
                 println!("phased\t{j}\t{i}\t{class}\t{}\t{}\t\
-                         {ref_count}\t{alt_count}\t{hvaf:.3}\t{:.3}\t{:.3}\t{:.3}",
-                         is_het as u8, is_somatic as u8, probs[0], probs[1], probs[2]);
+                         {ref_count}\t{alt_count}\t{hvaf:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
+                         is_het as u8, is_somatic as u8, probs[0], probs[1], probs[2], calculate_qual_from_prob(probs[2]));
             }
         }
 
@@ -248,14 +260,14 @@ pub fn sim_pileup(params: &ModelParameters, reference_genome: &str, per_site_out
             let alt_count = ps.get_count_unphased(alt_base_index) as u64;
             let ref_count = ps.get_count_unphased(ref_base_index) as u64;
             let un_probs = calculate_class_probabilities_unphased(alt_count, ref_count, &params);
-            let sgz_probs = calculate_class_probabilities_sgz(alt_count, ref_count, &params);
+            //let sgz_probs = calculate_class_probabilities_sgz(alt_count, ref_count, &params);
 
             // update summary stats
             let is_het = germline_haplotypes[0][j] != chromosome_bytes[j] || germline_haplotypes[1][j] != chromosome_bytes[j];
             let is_somatic = somatic_haplotypes[0][j] != germline_haplotypes[0][j] || somatic_haplotypes[1][j] != germline_haplotypes[1][j];
             
             unphased_model_stats.update(is_het, is_somatic, &un_probs);
-            sgz_model_stats.update(is_het, is_somatic, &sgz_probs);
+            //sgz_model_stats.update(is_het, is_somatic, &sgz_probs);
             
             // output per-record calls, if wanted
             if per_site_output {
@@ -268,12 +280,14 @@ pub fn sim_pileup(params: &ModelParameters, reference_genome: &str, per_site_out
                 }
 
                 println!("unphased\t{j}\tboth\t{class}\t{}\t{}\t\
-                         {ref_count}\t{alt_count}\t{hvaf:.3}\t{:.3}\t{:.3}\t{:.3}",
-                         is_het as u8, is_somatic as u8, un_probs[0], un_probs[1], un_probs[2]);
+                         {ref_count}\t{alt_count}\t{hvaf:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
+                         is_het as u8, is_somatic as u8, un_probs[0], un_probs[1], un_probs[2], calculate_qual_from_prob(un_probs[2]));
                 
+                /*
                 println!("sgz\t{j}\tboth\t{class}\t{}\t{}\t\
-                         {ref_count}\t{alt_count}\t{hvaf:.3}\t{:.3}\t{:.3}\t{:.3}",
-                         is_het as u8, is_somatic as u8, sgz_probs[0], sgz_probs[1], sgz_probs[2]);
+                         {ref_count}\t{alt_count}\t{hvaf:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
+                         is_het as u8, is_somatic as u8, sgz_probs[0], sgz_probs[1], sgz_probs[2], calculate_qual_from_prob(sgz_probs[2]));
+                */
             }
         }
     }
@@ -283,7 +297,7 @@ pub fn sim_pileup(params: &ModelParameters, reference_genome: &str, per_site_out
                   estimated_het_bases\testimated_mutated_bases\tnum_somatic_calls\tsomatic_call_sensitivity\tsomatic_call_precision\tf1");
         phased_model_stats.print(& params);
         unphased_model_stats.print(& params);
-        sgz_model_stats.print(& params);
+        //sgz_model_stats.print(& params);
     }
 }
 
