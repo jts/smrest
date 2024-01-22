@@ -150,7 +150,7 @@ pub fn sim_pileup(params: &ModelParameters, reference_genome: &str, per_site_out
     chromosome_sequence.make_ascii_uppercase();
     let mut rng = rand::thread_rng();
     
-    // replace Ns with As
+    // replace IUPACs with As
     let alphabet = [ 'A' as u8, 'C' as u8, 'G' as u8, 'T' as u8 ].to_vec();
     let chromosome_bytes: Vec<u8> = chromosome_sequence.into_bytes().into_iter().map(|x| { if alphabet.contains(&x) { x } else { 'A' as u8 } } ).collect();
 

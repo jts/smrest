@@ -161,6 +161,7 @@ pub fn somatic_call(input_bam: &str,
                     reference_genome: &str, 
                     output_bed: Option<&str>, 
                     phased_vcf: Option<&str>,
+                    purity: f64,
                     model: CallingModel) {
 
     // somatic calling specific parameters
@@ -180,7 +181,10 @@ pub fn somatic_call(input_bam: &str,
     let min_variant_observations = 3;
     let min_variant_observations_per_strand = 1;
     
-    let params = ModelParameters::defaults();
+    let max_somatic_qual = 500.0;
+
+    let mut params = ModelParameters::defaults();
+    params.purity = purity;
     let mut longshot_parameters = LongshotParameters::defaults();
     longshot_parameters.estimate_alignment_parameters(&input_bam.to_owned(), &reference_genome.to_owned(), &None);
     longshot_parameters.extract_fragment_parameters.alignment_type = AlignmentType::HtsLibProbAln;
@@ -378,8 +382,8 @@ pub fn somatic_call(input_bam: &str,
         }
 
         let mut qual = *PHREDProb::from(Prob(1.0 - class_probs[2]));
-        if qual > 500.0 {
-            qual = 500.0;
+        if qual > max_somatic_qual {
+            qual = max_somatic_qual;
         }
         record.set_qual(qual as f32);
         record.push_info_integer(b"SomaticHaplotypeIndex", &[candidate_haplotype_index as i32]).expect("Could not add INFO");

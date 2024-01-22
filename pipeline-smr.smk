@@ -1,3 +1,5 @@
+import csv
+
 configfile: "/.mounts/labs/simpsonlab/users/jsimpson/projects/nanopore/2022.06.27.smrest_dev/etc/snakemake_config.yaml"
 
 genotyping_window_size = 10
@@ -34,6 +36,74 @@ def get_calling_windows(win_size_mb):
 #        expand("smrest_calls/{sample}/{sample}.whatshap_phased.called_regions.bed", sample=config['samples']),
 #        expand("smrest_calls/{sample}/{sample}.whatshap_phased.calls.vcf", sample=config['samples'])
 
+
+#
+# hmftools suite for purity/ploidy/copy number inference
+#
+rule run_amber:
+    input:
+        bam="data/{sample}.bam",
+        bai="data/{sample}.bam.bai"
+    output:
+        directory("hmftools/{sample}/amber")
+    params:
+        memory_per_thread="4G",
+        extra_cluster_opt=""
+    threads: 8
+    shell:
+        """java -jar -Xmx8G {config[hmftools_amber_jar]} \
+                -tumor {wildcards.sample} \
+                -tumor_bam {input.bam} \
+                -output_dir {output} \
+                -validation_stringency LENIENT \
+                -threads {threads} \
+                -ref_genome_version V38 \
+                -loci {config[hmftools_resources]}/HMFtools-Resources_dna_pipeline_v5_31_38_copy_number_GermlineHetPon.38.vcf"""
+    
+rule run_cobalt:
+    input:
+        bam="data/{sample}.bam",
+        bai="data/{sample}.bam.bai"
+    output:
+        directory("hmftools/{sample}/cobalt")
+    params:
+        memory_per_thread="4G",
+        extra_cluster_opt=""
+    threads: 8
+    shell:
+        """java -jar -Xmx8G {config[hmftools_cobalt_jar]} \
+                -tumor {wildcards.sample} \
+                -tumor_bam {input.bam} \
+                -output_dir {output} \
+                -validation_stringency LENIENT \
+                -threads {threads} \
+                -tumor_only_diploid_bed {config[hmftools_resources]}/HMFtools-Resources_dna_pipeline_v5_31_38_copy_number_DiploidRegions.38.bed\
+                -gc_profile {config[hmftools_resources]}/HMFtools-Resources_dna_pipeline_v5_31_38_copy_number_GC_profile.1000bp.38.cnp"""
+
+
+rule run_purple:
+    input:
+        amber="hmftools/{sample}/amber",
+        cobalt="hmftools/{sample}/cobalt"
+    output:
+    	base=directory("hmftools/{sample}/purple/"),
+    	purity="hmftools/{sample}/purple/{sample}.purple.purity.tsv",
+    	circos="hmftools/{sample}/purple/circos/{sample}.circos.conf"
+    params:
+        memory_per_thread="4G",
+        extra_cluster_opt=""
+    threads: 8
+    shell:
+        """java -jar -Xmx8G {config[hmftools_purple_jar]} \
+                -tumor {wildcards.sample} \
+                -output_dir {output.base} \
+                -amber {input.amber} \
+                -cobalt {input.cobalt} \
+                -gc_profile {config[hmftools_resources]}/HMFtools-Resources_dna_pipeline_v5_31_38_copy_number_GC_profile.1000bp.38.cnp \
+                -ref_genome {config[reference]} \
+                -threads 8 \
+                -ref_genome_version V38 \
+                -ensembl_data_dir {config[hmftools_resources]}/ensembl_data"""
 
 #
 # Genotype gnomad SNPs
@@ -156,18 +226,27 @@ def get_fai(wildcards):
 #
 # Somatic mutation calling
 #
+def get_purity_from_purple(wildcards):
+    fn = f"hmftools/{wildcards.sample}/purple/{wildcards.sample}.purple.purity.tsv"
+    with open(fn) as f:
+        rd = csv.DictReader(f, delimiter="\t", quotechar='"')
+        for row in rd:
+            p = float(row['purity'])
+            return p
+
 rule call_regions:
     input:
         bam="haplotag/{sample}/{sample}.gnomad_genotype.whatshap_phased.tagged.bam",
         bai="haplotag/{sample}/{sample}.gnomad_genotype.whatshap_phased.tagged.bam.bai"
     params:
         memory_per_thread="24G",
-        extra_cluster_opt=""
+        extra_cluster_opt="",
+        purity=get_purity_from_purple
     output:
         vcf="smrest_calls_phased_bam/{sample}/per_region/{sample}.whatshap_phased.region.{region}.vcf",
         bed="smrest_calls_phased_bam/{sample}/per_region/{sample}.whatshap_phased.region.{region}.bed"
     shell:
-        "{config[smrest]} call -m haplotype-likelihood -r {wildcards.region} -g {config[reference]} -o {output.bed} {input.bam} > {output.vcf}"
+        "{config[smrest]} call -m haplotype-likelihood --purity {params.purity} -r {wildcards.region} -g {config[reference]} -o {output.bed} {input.bam} > {output.vcf}"
 
 rule call_regions_internal_tag:
     input:
@@ -175,15 +254,17 @@ rule call_regions_internal_tag:
         #bai="haplotag/{sample}/{sample}.gnomad_genotype.whatshap_phased.tagged.bam.bai"
         bam="data/{sample}.bam",
         bai="data/{sample}.bam.bai",
-        phased_vcf="phasing/{sample}/{sample}.gnomad_genotype.whatshap_phased.vcf"
+        phased_vcf="phasing/{sample}/{sample}.gnomad_genotype.whatshap_phased.vcf",
+    	purity="hmftools/{sample}/purple/{sample}.purple.purity.tsv"
     params:
         memory_per_thread="24G",
-        extra_cluster_opt=""
+        extra_cluster_opt="",
+        purity=get_purity_from_purple
     output:
         vcf="smrest_calls/{sample}/per_region/{sample}.whatshap_phased.region.{region}.vcf",
         bed="smrest_calls/{sample}/per_region/{sample}.whatshap_phased.region.{region}.bed"
     shell:
-        "{config[smrest]} call -m haplotype-likelihood -r {wildcards.region} -g {config[reference]} -p {input.phased_vcf} -o {output.bed} {input.bam} > {output.vcf}"
+        "{config[smrest]} call -m haplotype-likelihood --purity 0.5 -r {wildcards.region} -g {config[reference]} -p {input.phased_vcf} -o {output.bed} {input.bam} > {output.vcf}"
 
 rule merge_region_calls:
     input:
@@ -206,6 +287,37 @@ rule merge_region_bed:
         extra_cluster_opt=""
     shell:
         "cat {input.beds} > {output}"
+
+rule final_bed:
+    input:
+        "smrest_calls/{sample}/{sample}.{phaser}.called_regions.bed"
+    output:
+        "smrest_calls/{sample}/{sample}.{phaser}.final_call_regions.bed"
+    params:
+        memory_per_thread="4G",
+        extra_cluster_opt=""
+    shell:
+        """bedtools intersect -b {config[giab_hc_bed]} \
+                              -a {input} > {output}"""
+
+rule final_calls:
+    input:
+        vcf="smrest_calls/{sample}/{sample}.{phaser}.calls.vcf.gz",
+        tbi="smrest_calls/{sample}/{sample}.{phaser}.calls.vcf.gz.tbi",
+        bed="smrest_calls/{sample}/{sample}.{phaser}.final_call_regions.bed"
+    output:
+        "smrest_calls/{sample}/{sample}.{phaser}.final_q{min_somatic_qual}_pass_calls.vcf"
+    params:
+        memory_per_thread="4G",
+        extra_cluster_opt=""
+    shell:
+        """
+        if [ -s {input.bed} ]; then
+            bcftools filter -T {input.bed} -i 'QUAL > {wildcards.min_somatic_qual} && (FILTER == \"PASS\" || FILTER == \".\")' {input.vcf} > {output}
+        else
+            zgrep \"^#\" {input.vcf} > {output}
+        fi
+        """
 
 rule index_bam:
     input:

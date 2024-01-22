@@ -237,6 +237,10 @@ fn main() {
                     .long("model")
                     .takes_value(true)
                     .help("the probabilistic model used to call mutations (raw-pileup, realigned-pileup)"))
+                .arg(Arg::with_name("purity")
+                    .long("purity")
+                    .takes_value(true)
+                    .help("tumor purity for calling model"))
                 .arg(Arg::with_name("input-bam")
                     .required(true)
                     .index(1)
@@ -284,12 +288,14 @@ fn main() {
     } else if let Some(matches) = matches.subcommand_matches("call") {
         let model_str = matches.value_of("model").unwrap_or("haplotype-likelihood");
         let model = str_to_calling_model(model_str).expect("unknown calling model");
+        let purity = value_t!(matches, "purity", f64).unwrap_or(0.75);
 
         somatic_call(matches.value_of("input-bam").unwrap(),
                      matches.value_of("region").unwrap(),
                      matches.value_of("genome").unwrap(),
                      matches.value_of("output-region-bed"),
                      matches.value_of("phased-vcf"),
+                     purity,
                      model)
     } else if let Some(matches) = matches.subcommand_matches("genotype-hets") {
         genotype(matches.value_of("input-bam").unwrap(),
