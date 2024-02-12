@@ -3,8 +3,6 @@ name = "smrest"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 rust-htslib = "*"
 clap = "3.2.21"
@@ -17,5 +15,5 @@ csv = "*"
 approx = "*"
 fishers_exact = "*"
 cached = "*"
-longshot = { path = "../longshot" }
+longshot = { git = "https://github.com/jts/longshot.git", rev = "1174cb6" }
 logaddexp = "*"
