@@ -2,7 +2,7 @@
 // Copyright 2022 Ontario Institute for Cancer Research
 // Written by Jared Simpson (jared.simpson@oicr.on.ca)
 //---------------------------------------------------------
-use crate::utility::ReadHaplotypeCache;
+
 use crate::ReadHaplotypeLikelihood;
 use crate::LogProb;
 use crate::ReadMetadata;

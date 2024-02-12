@@ -21,7 +21,7 @@ mod simulation;
 use crate::simulation::*;
 
 mod classifier;
-use crate::classifier::*;
+
 
 mod parameters;
 use crate::parameters::*;
@@ -349,7 +349,7 @@ fn main() {
     }
 }
 
-fn extract_mutations(input_bam: &str, reference_genome: &str, min_depth: u32, region_opt: Option<&str>) {
+fn extract_mutations(_input_bam: &str, _reference_genome: &str, _min_depth: u32, _region_opt: Option<&str>) {
     /*
     let params = ModelParameters::defaults();
         
@@ -490,7 +490,7 @@ fn phase(input_bam: &str, region_str: &str, candidates_vcf: &str, reference_geno
     longshot_parameters.estimate_alignment_parameters(&input_bam.to_owned(), &reference_genome.to_owned(), &None);
     
     let region = parse_region_string(Some(region_str), &input_bam.to_owned()).expect("Could not parse region").unwrap();
-    let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
+    let _bam = bam::IndexedReader::from_path(input_bam).unwrap();
     
     // read variants within this region
     let all_vars = parse_vcf_potential_variants(&candidates_vcf.to_owned(), &input_bam.to_owned())

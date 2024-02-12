@@ -75,7 +75,7 @@ pub fn find_candidates(bam_file: &String,
         if callable_region_vec.is_empty() {
             callable_region_vec.push( Range { start: reference_position, end: reference_position } );
         } else {
-            let mut current = callable_region_vec.last_mut().unwrap();
+            let current = callable_region_vec.last_mut().unwrap();
             if current.end + 1 != reference_position {
                 callable_region_vec.push( Range { start: reference_position, end: reference_position } );
             } else {
@@ -191,7 +191,7 @@ pub fn somatic_call(input_bam: &str,
 
     let region = parse_region_string(Some(region_str), &input_bam.to_owned()).expect("Could not parse region").unwrap();
     
-    let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
+    let bam = bam::IndexedReader::from_path(input_bam).unwrap();
     let header_view = bam.header();
     
     // get entire reference chromosome

@@ -34,7 +34,7 @@ pub fn haplotype_qc(input_bam: &str, region_str: &str, phased_vcf: &str, referen
     
     let region = parse_region_string(Some(region_str), &input_bam.to_owned()).expect("Could not parse region").unwrap();
     
-    let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
+    let bam = bam::IndexedReader::from_path(input_bam).unwrap();
     let header_view = bam.header();
     
     let bcf_records: Vec<bcf::Record> = read_bcf(&phased_vcf.to_owned(), Some(region.clone()))
@@ -102,7 +102,7 @@ pub fn haplotype_qc(input_bam: &str, region_str: &str, phased_vcf: &str, referen
                 let id = rhl.read_name.as_ref().unwrap().clone();
 
                 let h1_allele = bcf_record.genotypes().expect("Error reading genotypes").get(0)[0].index().unwrap();
-                let mut v = read_haplotype_stats.entry(id).or_insert(ReadHaplotypeStats::new(variant_indices.len()));
+                let v = read_haplotype_stats.entry(id).or_insert(ReadHaplotypeStats::new(variant_indices.len()));
                 if h1_allele == 0 {
                     v.likelihoods[0] += *rhl.base_allele_likelihood;
                     v.likelihoods[1] += *rhl.mutant_allele_likelihood;

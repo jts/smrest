@@ -217,7 +217,7 @@ pub fn assign_reads_to_haplotypes(input_bam: &String,
         let mut h1_match = 0;
 
         for c in &f.calls {
-            let var = &varlist.lst[c.var_ix];
+            let _var = &varlist.lst[c.var_ix];
             let h0_idx = bcf_records[c.var_ix].genotypes().expect("Error reading genotypes").get(0)[0].index().unwrap() as usize;
             assert!(h0_idx == 0 || h0_idx == 1);
 
@@ -430,8 +430,8 @@ pub fn is_phased(record: &bcf::Record) -> bool {
     let sample_count = usize::try_from(record.sample_count()).unwrap();
     assert!(sample_count == 1);
 
-    let mut n_ref = 0;
-    let mut n_alt = 0;
+    let _n_ref = 0;
+    let _n_alt = 0;
 
     let mut is_phased = false;
     for gta in gts.get(0).iter() {

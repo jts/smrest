@@ -31,7 +31,7 @@ pub fn genotype(input_bam: &str, region_str: &str, candidates_vcf: &str, referen
     
     let region = parse_region_string(Some(region_str), &input_bam.to_owned()).expect("Could not parse region").unwrap();
     
-    let mut bam = bam::IndexedReader::from_path(input_bam).unwrap();
+    let bam = bam::IndexedReader::from_path(input_bam).unwrap();
     let header_view = bam.header();
     
     // set up vcf output

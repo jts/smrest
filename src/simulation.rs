@@ -3,7 +3,7 @@
 // Written by Jared Simpson (jared.simpson@oicr.on.ca)
 //---------------------------------------------------------
 use rust_htslib::{faidx};
-use bio::stats::{Prob, LogProb, PHREDProb};
+use bio::stats::{Prob, PHREDProb};
 use statrs::distribution::{Binomial};
 use std::fs::File;
 use std::io::Write;
@@ -13,7 +13,7 @@ use crate::PileupStats;
 use crate::base2index;
 use crate::classifier::calculate_class_probabilities_phased;
 use crate::classifier::calculate_class_probabilities_unphased;
-use crate::classifier::calculate_class_probabilities_sgz;
+
 
 fn rand_base_not(rng: &mut ThreadRng, curr_base: u8) -> u8 {
     let bases = [ 'A', 'C', 'G', 'T' ];
@@ -138,7 +138,7 @@ pub fn calculate_qual_from_prob(p: f64) -> f64
 
 pub fn sim_pileup(params: &ModelParameters, reference_genome: &str, per_site_output: bool, mutation_output_filename: &str)
 {
-    let mut rng = rand::thread_rng();
+    let _rng = rand::thread_rng();
 
     // get genome sequence
     let chromosome_name = String::from("chr2");
