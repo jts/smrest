@@ -244,21 +244,6 @@ pub fn somatic_call(input_bam: &str,
                                                           min_variant_observations,
                                                           0.1,
                                                           60);
-/*
-    let mut varlist = call_potential_snvs(
-            &input_bam.to_owned(),
-            &reference_genome.to_owned(),
-            &Some(region.clone()),
-            &longshot_parameters.genotype_priors,
-            20,
-            200,
-            min_variant_observations, //potential_snv_min_alt_count,
-            0.1, //potential_snv_min_alt_frac,
-            50,
-            longshot_parameters.alignment_parameters.as_ref().unwrap().ln(),
-            LogProb::from(Prob(0.000000000001)),
-            ).expect("Could not find candidate variants");
-*/
     for var in &mut varlist.lst {
         //println!("{}\t{}\t{}\t{}\t{}", var.tid, var.pos0 + 1, var.alleles.len(), var.alleles[0], var.alleles[1]);
         if var.alleles.len() > 2 {

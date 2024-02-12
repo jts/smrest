@@ -76,64 +76,6 @@ pub fn genotype(input_bam: &str, region_str: &str, candidates_vcf: &str, referen
     let p_hom_alt = var_rate - p_het;
     let p_hom_ref = 1.0 - p_hom_alt - p_het;
 
-    /*
-
-    // estimate the maximum likelihood allele frequency of hets 
-    // calculate likelihood of het af
-    // L(af) = P(data|af)
-    //       = P(data| gt = 0/0, af) P(gt = 0/0) + P(data| gt = 0/1, af) P(gt = 0/1) + P(data| gt = 1/1, af) P(gt = 1/1)
-    let var_rate = 0.001;
-    let p_het = var_rate * 2.0 / 3.0;
-    let p_hom_alt = var_rate - p_het;
-    let p_hom_ref = 1.0 - p_hom_alt - p_het;
-
-    let mut ml = f64::NEG_INFINITY;
-    let mut ml_af = 0.0;
-
-    let bins = 50;
-    let step = 0.01;
-    for i in 0..bins {
-        let het_af = f64::from(i)*step;
-
-        let mut lp_total = 0.0;
-        for i in 0..varlist.lst.len() {
-
-            let var = &varlist.lst[i];
-            let rhls = &rhl_per_var[i];
-
-            if var.pos0 < region.start_pos as usize || var.pos0 > region.end_pos as usize {
-                continue;
-            }
-
-            let reference_base = var.alleles[0].as_bytes()[0] as char;
-            let alt_base = var.alleles[1].as_bytes()[0] as char;
-
-            if base2index(reference_base) == -1 || base2index(alt_base) == -1 {
-                continue;
-            }
-
-            let likelihoods = calculate_genotype_likelihoods(rhls, het_af);
-            let lp_data_hom_ref:f64 = likelihoods[0];
-            let lp_data_het:f64 = likelihoods[1];
-            let lp_data_hom_alt:f64 = likelihoods[2];
-            
-            let lp_t_hom_ref = LogProb(lp_data_hom_ref) + LogProb::from(Prob(p_hom_ref));
-            let lp_t_het = LogProb(lp_data_het) + LogProb::from(Prob(p_het));
-            let lp_t_hom_alt = LogProb(lp_data_hom_alt) + LogProb::from(Prob(p_hom_alt));
-
-            let lp_sum = LogProb::ln_sum_exp( &[ lp_t_hom_ref, lp_t_het, lp_t_hom_alt] );
-            lp_total += *lp_sum;
-        }
-
-        if lp_total > ml {
-            ml = lp_total;
-            ml_af = het_af;
-        }
-
-        //println!("{:.3}\t{:.3}\t{:.3}\t{:.3}", het_af, lp_total, ml_af, ml);
-    }
-    */
-
     // call genotypes
     let het_af = 0.25;
     for i in 0..varlist.lst.len() {
