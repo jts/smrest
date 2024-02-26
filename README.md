@@ -18,13 +18,13 @@ cargo build --release
 
 ## Usage
 
-A Snakemake pipeline is provided in `scripts/` to automate the process of calling heterozygous SNPs, phasing them with `whatshap`, then identifying somatic mutations.
+A Snakemake pipeline is provided in `workflow/Snakemake` to automate the process of calling heterozygous SNPs, phasing them with `whatshap`, then identifying somatic mutations.
 
 TODO: demo data
 
 ## License
 
-TODO
+MIT
 
 ## Acknowledgements
 
