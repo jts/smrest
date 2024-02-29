@@ -4,7 +4,7 @@ smrest is a prototype somatic mutation caller for single molecule long reads. It
 
 ## Citation
 
-[Simpson, J.T., Detecting Somatic Mutations Without Matched Normal Samples Using Long Reads, BioRxiv](TODO)
+[Simpson, J.T., Detecting Somatic Mutations Without Matched Normal Samples Using Long Reads, BioRxiv](https://www.biorxiv.org/content/10.1101/2024.02.26.582089v1)
 
 ## Compiling
 
