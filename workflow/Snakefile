@@ -51,14 +51,25 @@ rule get_gnomad_af_common:
     shell:
         "bcftools filter -i 'INFO/AF > 0.001 & TYPE == \"snp\" & N_ALT == 1' {input} | grep -v random | grep -v alt > {output}"
 
+rule get_giab_hc_bed_gz:
+    output:
+        "resources/GRCh38_notinalldifficultregions.bed.gz"
+    params:
+        memory_per_thread="4G",
+        extra_cluster_opt=""
+    shell:
+        "wget -O {output} https://raw.githubusercontent.com/jts/smrest/main/etc/GRCh38_notinalldifficultregions.bed.gz"
+
 rule get_giab_hc_bed:
+    input:
+        "resources/GRCh38_notinalldifficultregions.bed.gz"
     output:
         "resources/GRCh38_notinalldifficultregions.bed"
     params:
         memory_per_thread="4G",
         extra_cluster_opt=""
     shell:
-        "wget -O {output} https://raw.githubusercontent.com/jts/smrest/main/etc/GRCh38_notinalldifficultregions.bed"
+        "gunzip {input}"
 
 #
 # Genotype gnomad SNPs
