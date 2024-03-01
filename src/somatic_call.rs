@@ -169,8 +169,8 @@ pub fn somatic_call(input_bam: &str,
     let max_tail_mismatch_rate = 0.05;
     let max_alignment_artifact_evidence_proportion = 0.25;
 
-    let soft_min_p_somatic = 1e-6;
-    let hard_min_p_somatic = 1e-10;
+    let soft_min_p_somatic = 0.99;
+    let hard_min_p_somatic = 0.2;
     let min_allele_call_qual = LogProb::from(Prob(0.1));
     let hard_min_depth = 10;
     let filter_min_depth = hard_min_depth as i32;
