@@ -1,6 +1,7 @@
 import csv
 
 include: "rules/hmftools.smk"
+include: "rules/demo.smk"
 
 genotyping_window_size = 10
 phasing_window_size = 100
@@ -70,6 +71,10 @@ rule get_giab_hc_bed:
         extra_cluster_opt=""
     shell:
         "gunzip {input}"
+
+rule prepare_resources:
+    input:
+        "resources/GRCh38_notinalldifficultregions.bed", "resources/genotype_sites.vcf"
 
 #
 # Genotype gnomad SNPs
