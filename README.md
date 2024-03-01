@@ -20,7 +20,7 @@ cargo build --release
 
 smrest has three steps: first it finds heterozygous SNPs using a panel of known population variants from gnomAD, then these are phased using `whatshap`, followed by somatic mutation calling. These steps can be run manually, or using a Snakemake pipeline we have provided for convenience. We describe both methods here, using a small demo dataset that is descibed in the following section.
 
-# Demo data preparation
+### Demo data preparation
 
 To demonstrate the usage of this program, we have prepared a small dataset consisting of ONT reads for chromosome 20 of COLO829/COLO829BL. To get the demo data you can use the snakemake pipeline (for simplicitly all commands shown below will assume you are running in the `smrest/workflow` directory, if you are running from a different path you will need to adjust the commands):
 
@@ -34,7 +34,7 @@ This command will place the reads in `data/COLO829.mixture.chr20.bam`. `smrest` 
 snakemake prepare_resources
 ```
 
-# Mutation calling (manual)
+### Mutation calling (manual)
 
 There are three steps to calling somatic mutations with smrest. First, we find heterozygous SNPs with `smrest genotype-hets`:
 
@@ -54,7 +54,7 @@ Finally, we call somatic mutations:
 smrest call -m haplotype-likelihood --purity 0.5 -r chr20 -g resources/GRCh38_no_alt_analysis_set.GCA_000001405.15.fna -p COLO829.gnomad_genotype_whatshap_phased.vcf -o COLO829.smrest_called_regions.bed data/COLO829.mixture.chr20.bam > COLO829.smrest_somatic_calls.vcf
 ```
 
-# Mutation calling (pipeline)
+### Mutation calling (pipeline)
 
 A Snakemake pipeline is provided in `workflow/Snakemake` to automate these three steps. It will also parallelize the process across 10Mb segments of the genome. It assumes the BAM file is in `data/` (as in the demo data) and the pipeline can be run by building the `smrest_calls/<sample>/<sample>.whatshap.final_q20_pass_calls.vcf` target, where <sample> is the prefix of the BAM file. For example:
 
