@@ -53,6 +53,17 @@ Finally, we call somatic mutations:
 ```
 smrest call -m haplotype-likelihood --purity 0.5 -r chr20 -g resources/GRCh38_no_alt_analysis_set.GCA_000001405.15.fna -p COLO829.gnomad_genotype_whatshap_phased.vcf -o COLO829.smrest_called_regions.bed data/COLO829.mixture.chr20.bam > COLO829.smrest_somatic_calls.vcf
 ```
+These mutations calls are over all regions of the genome that could be phased. To produce the final call set we intersect the phased BED file with the GIAB best practices BED:
+
+```
+bedtools intersect -b resources/GRCh38_notinalldifficultregions.bed -a COLO829.smrest_called_regions.bed > COLO829.smrest_best_practice_called_regions.bed
+```
+
+Then use this BED to produce the final call set:
+
+```
+bcftools filter -T COLO829.smrest_best_practice_called_regions.bed COLO829.smrest_somatic_calls.vcf > COLO829.smrest_somatic_calls_final.vcf
+```
 
 ### Mutation calling (pipeline)
 
