@@ -3,6 +3,8 @@ import csv
 include: "rules/hmftools.smk"
 include: "rules/demo.smk"
 
+configfile: srcdir("config.yaml")
+
 genotyping_window_size = 10
 phasing_window_size = 100
 calling_window_size = 10
