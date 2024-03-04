@@ -5,6 +5,7 @@
 
 use statrs::distribution::{Binomial, Discrete, ContinuousCDF};
 use bio::stats::{Prob, LogProb};
+use approx::assert_abs_diff_eq;
 use cached::proc_macro::cached;
 use crate::longshot_realign::ReadHaplotypeLikelihood;
 use crate::parameters::ModelParameters;
